@@ -1,12 +1,12 @@
 'use client';
 import {
-  Archive, ArchiveRestore, ArrowLeft, ArrowRightLeft, CalendarCheck, CalendarPlus, Check, GitMerge, Mail, MessageSquareText, Pencil, Phone, Plus, Trash2, UserRound, Sparkles,
+  Archive, ArchiveRestore, ArrowLeft, ArrowRightLeft, CalendarCheck, CalendarPlus, Check, GitMerge, ListPlus, Mail, MessageSquareText, Pencil, Phone, Plus, Trash2, UserRound, Sparkles, X,
 } from 'lucide-react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { LeadForm, TaskForm } from '@/components/forms';
-import { Avatar, ColorDot, EmptyState, ErrorState, LabelChip, Skeleton, Spinner, Tabs, cx, useUi } from '@/components/ui';
+import { Avatar, ColorDot, Dropdown, EmptyState, ErrorState, LabelChip, Skeleton, Spinner, Tabs, cx, useUi } from '@/components/ui';
 import { api, useApi } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { fmtDate, fmtDateTime, money, relTime } from '@/lib/format';
@@ -43,7 +43,7 @@ export default function LeadDetailPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const { me, can } = useAuth();
-  const { pipelines, members, fields, reload: reloadRefs } = useRefs();
+  const { pipelines, members, fields, lists, reload: reloadRefs } = useRefs();
   const { toast, confirm } = useUi();
   const lead = useApi<Detail>(`/leads/${id}`);
   const acts = useApi<Activity[]>(`/leads/${id}/activities`);
@@ -120,6 +120,15 @@ export default function LeadDetailPage() {
       await api(`/leads/${id}/merge`, { body: { duplicateId: dup.id } });
       toast('Leads merged');
       reload();
+    } catch (e) { toast((e as Error).message, 'error'); }
+  }
+
+  async function listMembership(listId: string, add: boolean, name: string) {
+    try {
+      await api('/leads/bulk', { body: { ids: [id], action: add ? 'addToList' : 'removeFromList', value: listId } });
+      toast(add ? `Added to ${name}` : `Removed from ${name}`);
+      lead.reload();
+      reloadRefs();
     } catch (e) { toast((e as Error).message, 'error'); }
   }
 
@@ -225,6 +234,24 @@ export default function LeadDetailPage() {
               ))}
             </dl>
             {l.labels.length > 0 && <div className="mt-4 flex flex-wrap gap-1.5 border-t border-ink/10 pt-4">{l.labels.map((x) => <LabelChip key={x.id} {...x} />)}</div>}
+            {(l.lists.length > 0 || (canEdit && lists.length > 0)) && (
+              <div className="mt-4 border-t border-ink/10 pt-4">
+                <span className="label">Lists</span>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {l.lists.map((x) => (
+                    <span key={x.id} className="pill-muted gap-1 pr-1">
+                      <Link href={`/leads?listId=${x.id}`} className="hover:underline">{x.name}</Link>
+                      {canEdit && <button className="rounded-full p-0.5 hover:bg-ink/10" onClick={() => listMembership(x.id, false, x.name)} aria-label={`Remove from ${x.name}`}><X className="h-3 w-3" /></button>}
+                    </span>
+                  ))}
+                  {canEdit && lists.some((x) => !l.lists.some((y) => y.id === x.id)) && (
+                    <Dropdown align="left" trigger={() => <button className="btn-ghost btn-sm"><ListPlus className="h-3.5 w-3.5" />Add to list</button>}>
+                      {(close) => <div className="max-h-64 overflow-y-auto">{lists.filter((x) => !l.lists.some((y) => y.id === x.id)).map((x) => <button key={x.id} className="menu-item" onClick={() => { close(); listMembership(x.id, true, x.name); }}>{x.name}</button>)}</div>}
+                    </Dropdown>
+                  )}
+                </div>
+              </div>
+            )}
           </section>
           {can('leads.delete') && (
             <section className="card card-pad">

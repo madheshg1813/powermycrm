@@ -653,6 +653,65 @@ describe('saved views', () => {
   });
 });
 
+describe('lead lists', () => {
+  it('creates lists, adds and removes leads in bulk, filters by list and keeps leads when a list is deleted', async () => {
+    const o = await registerOrg('Lists');
+    const agent = await addMember(o, 'Sales Agent');
+    const l1 = (await o.post('/leads', { name: 'List One', phone: '9555500001' })).body;
+    const l2 = (await o.post('/leads', { name: 'List Two', phone: '9555500002' })).body;
+    const l3 = (await agent.post('/leads', { name: 'Agent Lead', phone: '9555500003' })).body;
+
+    const hot = await o.post('/lists', { name: 'Diwali campaign', description: 'Call before the 20th' });
+    expect(hot.status).toBe(201);
+    expect(hot.body).toMatchObject({ name: 'Diwali campaign', leads: 0, mine: true });
+    expect((await o.post('/lists', { name: 'diwali CAMPAIGN' })).status).toBe(409);
+    expect((await o.post('/lists', { name: '' })).status).toBe(400);
+
+    // Add through the list endpoint and through the bulk action; duplicates and unknown ids are reported, not errors.
+    const add = await o.post(`/lists/${hot.body.id}/leads`, { ids: [l1.id, l2.id, l1.id, 'nope'] });
+    expect(add.body).toEqual({ added: 2, alreadyIn: 0, skipped: 1 });
+    expect((await o.post(`/lists/${hot.body.id}/leads`, { ids: [l1.id] })).body).toEqual({ added: 0, alreadyIn: 1, skipped: 0 });
+    expect((await o.post('/leads/bulk', { ids: [l3.id], action: 'addToList', value: hot.body.id })).body).toEqual({ updated: 1, skipped: 0 });
+    expect((await o.post('/leads/bulk', { ids: [l3.id], action: 'addToList', value: 'nope' })).status).toBe(400);
+
+    expect((await o.get(`/leads?listId=${hot.body.id}`)).body.items.map((l: any) => l.name).sort()).toEqual(['Agent Lead', 'List One', 'List Two']);
+    expect((await o.get(`/leads/${l1.id}`)).body.lists).toEqual([{ id: hot.body.id, name: 'Diwali campaign' }]);
+    expect((await o.get('/lists')).body[0].leads).toBe(3);
+
+    // An agent only sees and touches their own leads in a list.
+    expect((await agent.get('/lists')).body[0].leads).toBe(1);
+    expect((await agent.get(`/leads?listId=${hot.body.id}`)).body.items.map((l: any) => l.name)).toEqual(['Agent Lead']);
+    expect((await agent.post(`/lists/${hot.body.id}/leads`, { ids: [l1.id] })).status).toBe(404);
+    expect((await agent.post(`/lists/${hot.body.id}/leads/remove`, { ids: [l1.id, l3.id] })).body).toEqual({ removed: 1, skipped: 1 });
+    expect((await o.get('/lists')).body[0].leads).toBe(2);
+    // The agent did not create the list, so cannot rename or delete it.
+    expect((await agent.patch(`/lists/${hot.body.id}`, { name: 'Mine now' })).status).toBe(403);
+    expect((await agent.del(`/lists/${hot.body.id}`)).status).toBe(403);
+    const own = (await agent.post('/lists', { name: 'Agent list' })).body;
+    expect((await agent.patch(`/lists/${own.id}`, { name: 'Agent calls' })).status).toBe(200);
+
+    // Archived leads drop out of the count; bulk remove and delete leave the leads intact.
+    await o.post('/leads/bulk', { ids: [l2.id], action: 'archive' });
+    expect((await o.get('/lists')).body.find((l: any) => l.id === hot.body.id).leads).toBe(1);
+    await o.post('/leads/bulk', { ids: [l1.id], action: 'removeFromList', value: hot.body.id });
+    expect((await o.get(`/leads?listId=${hot.body.id}`)).body.total).toBe(0);
+    expect((await o.patch(`/lists/${hot.body.id}`, { name: 'Agent calls' })).status).toBe(409);
+    expect((await o.del(`/lists/${hot.body.id}`)).status).toBe(200);
+    expect((await o.get(`/leads/${l1.id}`)).status).toBe(200);
+    expect((await o.get('/lists')).body.map((l: any) => l.name)).toEqual(['Agent calls']);
+
+    // Another organisation cannot see, use or change the list.
+    const other = await registerOrg('ListsOther');
+    expect((await other.get('/lists')).body).toHaveLength(0);
+    expect((await other.get(`/leads?listId=${own.id}`)).body.total).toBe(0);
+    expect((await other.post(`/lists/${own.id}/leads`, { ids: [l1.id] })).status).toBe(404);
+    expect((await other.patch(`/lists/${own.id}`, { name: 'X' })).status).toBe(404);
+    expect((await other.del(`/lists/${own.id}`)).status).toBe(404);
+    const otherLead = (await other.post('/leads', { name: 'Other' })).body;
+    expect((await other.post('/leads/bulk', { ids: [otherLead.id], action: 'addToList', value: own.id })).status).toBe(400);
+  });
+});
+
 describe('assignment rules', () => {
   it('distributes leads round-robin, prefers a source rule and skips deactivated users', async () => {
     const o = await registerOrg('Rules');

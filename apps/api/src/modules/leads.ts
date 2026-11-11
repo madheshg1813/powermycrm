@@ -94,6 +94,7 @@ const listSchema = z.object({
   sourceId: z.string().optional(),
   ownerId: z.string().optional(), // user id, "me" or "unassigned"
   labelId: z.string().optional(),
+  listId: z.string().optional(),
   status: z.enum(['open', 'won', 'lost']).optional(),
   archived: z.enum(['true', 'false']).default('false'),
   createdFrom: z.coerce.date().optional(),
@@ -104,7 +105,7 @@ const listSchema = z.object({
 
 const bulkSchema = z.object({
   ids: z.array(z.string()).min(1).max(1000),
-  action: z.enum(['assign', 'stage', 'addLabel', 'removeLabel', 'archive', 'restore']),
+  action: z.enum(['assign', 'stage', 'addLabel', 'removeLabel', 'addToList', 'removeFromList', 'archive', 'restore']),
   value: z.string().nullable().optional(),
 });
 
@@ -120,6 +121,7 @@ const include = {
   source: { select: { id: true, name: true } },
   owner: { select: { id: true, name: true } },
   labels: { include: { label: true } },
+  lists: { select: { list: { select: { id: true, name: true } } } },
 } satisfies Prisma.LeadInclude;
 type LeadRow = Prisma.LeadGetPayload<{ include: typeof include }>;
 
@@ -127,6 +129,7 @@ const serialize = (l: LeadRow) => ({
   ...l,
   dealValue: l.dealValue === null ? null : Number(l.dealValue),
   labels: l.labels.map((x) => ({ id: x.label.id, name: x.label.name, color: x.label.color })),
+  lists: l.lists.map((x) => x.list),
 });
 
 const csvCell = (v: unknown) => {
@@ -173,6 +176,7 @@ export class LeadsService {
     else if (f.ownerId === 'unassigned') and.push({ ownerId: null });
     else if (f.ownerId) and.push({ ownerId: f.ownerId });
     if (f.labelId) and.push({ labels: { some: { labelId: f.labelId } } });
+    if (f.listId) and.push({ lists: { some: { listId: f.listId } } });
     if (f.status) and.push({ stage: { type: f.status.toUpperCase() as 'OPEN' | 'WON' | 'LOST' } });
     if (f.createdFrom || f.createdTo) and.push({ createdAt: { gte: f.createdFrom, lte: f.createdTo } });
     return { organisationId: ctx.orgId, archivedAt: f.archived === 'true' ? { not: null } : null, AND: and };
@@ -478,7 +482,7 @@ export class LeadsService {
 
   async bulk(ctx: Ctx, body: unknown) {
     const { ids, action, value } = parse(bulkSchema, body);
-    const need = { assign: 'leads.assign', stage: 'leads.edit', addLabel: 'leads.edit', removeLabel: 'leads.edit', archive: 'leads.delete', restore: 'leads.delete' }[action];
+    const need = { assign: 'leads.assign', stage: 'leads.edit', addLabel: 'leads.edit', removeLabel: 'leads.edit', addToList: 'leads.edit', removeFromList: 'leads.edit', archive: 'leads.delete', restore: 'leads.delete' }[action];
     requirePerm(ctx, need);
 
     const leads = await this.prisma.lead.findMany({
@@ -505,6 +509,15 @@ export class LeadsService {
           data: { stageId: stage.id, pipelineId: stage.pipelineId, stageEnteredAt: new Date(), lastActivityAt: new Date() },
         });
         await tx.leadActivity.createMany({ data: found.map((leadId) => ({ ...base, leadId, type: 'stage_changed', data: { to: stage.name } })) });
+      } else if (action === 'addToList' || action === 'removeFromList') {
+        const list = value ? await tx.leadList.findFirst({ where: { id: value, organisationId: ctx.orgId } }) : null;
+        if (!list) throw new BadRequestException('List not found');
+        if (action === 'addToList') {
+          await tx.leadListMember.createMany({ data: found.map((leadId) => ({ listId: list.id, leadId, addedById: ctx.userId })), skipDuplicates: true });
+          await tx.leadList.update({ where: { id: list.id }, data: { updatedAt: new Date() } });
+        } else {
+          await tx.leadListMember.deleteMany({ where: { listId: list.id, leadId: { in: found } } });
+        }
       } else if (action === 'addLabel' || action === 'removeLabel') {
         await this.checkRefs(ctx, { labelIds: value ? [value] : [] });
         if (!value) throw new BadRequestException('Label not found');

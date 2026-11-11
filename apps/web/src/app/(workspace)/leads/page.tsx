@@ -1,5 +1,5 @@
 'use client';
-import { Archive, ArchiveRestore, ArrowDown, ArrowUp, Bookmark, Download, Plus, Search, Tag, Upload, UserRound, Users, X } from 'lucide-react';
+import { Archive, ArchiveRestore, ArrowDown, ArrowUp, Bookmark, Download, ListMinus, ListPlus, Plus, Search, Tag, Upload, UserRound, Users, X } from 'lucide-react';
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { LeadForm } from '@/components/forms';
@@ -11,8 +11,8 @@ import { fmtDate, money, relTime } from '@/lib/format';
 import { Lead, useChanged, useRefs } from '@/lib/refs';
 
 type View = 'all' | 'mine' | 'unassigned' | 'archived';
-type Filters = { q: string; stageId: string; sourceId: string; ownerId: string; labelId: string; status: string };
-const noFilters: Filters = { q: '', stageId: '', sourceId: '', ownerId: '', labelId: '', status: '' };
+type Filters = { q: string; stageId: string; sourceId: string; ownerId: string; labelId: string; listId: string; status: string };
+const noFilters: Filters = { q: '', stageId: '', sourceId: '', ownerId: '', labelId: '', listId: '', status: '' };
 const COLUMNS: { key: string; label: string; sort?: string; className?: string }[] = [
   { key: 'name', label: 'Lead', sort: 'name' },
   { key: 'stage', label: 'Stage' },
@@ -85,9 +85,37 @@ function SavedViews({ current, canSave, onApply }: { current: Record<string, str
   );
 }
 
+/** Creates a static list and, when asked, drops the selected leads straight into it. */
+function NewListModal({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: (list: { id: string; name: string }) => void }) {
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    setError('');
+    setBusy(true);
+    try {
+      const list = await api<{ id: string; name: string }>('/lists', { body: { name, description: description || null } });
+      setName(''); setDescription('');
+      onCreated(list);
+    } catch (err) { setError((err as Error).message); } finally { setBusy(false); }
+  }
+  return (
+    <Modal open={open} onClose={onClose} title="New list"
+      footer={<><button className="btn-ghost" onClick={onClose}>Cancel</button><button className="btn-primary" disabled={busy || !name.trim()} onClick={save}>{busy && <Spinner />}Create list</button></>}>
+      <form className="space-y-3.5" onSubmit={save}>
+        {error && <p className="rounded-xl bg-danger-soft px-3 py-2 text-danger" role="alert">{error}</p>}
+        <Field label="List name"><input className="input" value={name} onChange={(e) => setName(e.target.value)} autoFocus maxLength={80} placeholder="Diwali offer calls" /></Field>
+        <Field label="Description" hint="Optional"><input className="input" value={description} onChange={(e) => setDescription(e.target.value)} maxLength={300} placeholder="Call before the 20th" /></Field>
+      </form>
+    </Modal>
+  );
+}
+
 export default function LeadsPage() {
   const { me, can } = useAuth();
-  const { pipelines, sources, labels, members, reload: reloadRefs } = useRefs();
+  const { pipelines, sources, labels, lists, members, reload: reloadRefs } = useRefs();
   const { toast, confirm } = useUi();
   const [view, setView] = useState<View>('all');
   const [filters, setFilters] = useState<Filters>(noFilters);
@@ -98,6 +126,7 @@ export default function LeadsPage() {
   const [ready, setReady] = useState(false);
   const [leadForm, setLeadForm] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [newList, setNewList] = useState(false);
   const [busy, setBusy] = useState(false);
 
   // Deep links such as /leads?ownerId=me or /leads?q=asha set the initial view.
@@ -219,6 +248,12 @@ export default function LeadsPage() {
           <option value="">All labels</option>
           {labels.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
         </select>
+        {lists.length > 0 && (
+          <select className="input w-auto" value={filters.listId} onChange={setFilter('listId')} aria-label="List">
+            <option value="">All lists</option>
+            {lists.map((l) => <option key={l.id} value={l.id}>{l.name} ({l.leads})</option>)}
+          </select>
+        )}
         {(activeFilters > 0 || filters.q) && (
           <button className="btn-ghost btn-sm" onClick={() => { setFilters(noFilters); setSearch(''); }}><X className="h-3.5 w-3.5" />Clear</button>
         )}
@@ -270,6 +305,18 @@ export default function LeadsPage() {
                       </div>
                     )}
                   </Dropdown>
+                  <Dropdown align="left" trigger={() => <button className="btn-on-ink btn-sm"><ListPlus className="h-3.5 w-3.5" />Add to list</button>}>
+                    {(close) => (
+                      <div className="max-h-64 overflow-y-auto text-ink">
+                        {lists.map((l) => <button key={l.id} className="menu-item" onClick={() => { close(); bulk('addToList', l.id, `added to ${l.name}`); }}><span className="min-w-0 flex-1 truncate">{l.name}</span><span className="text-xs text-ink-muted">{l.leads}</span></button>)}
+                        {lists.length > 0 && <div className="my-1 border-t border-ink/10" />}
+                        <button className="menu-item font-semibold" onClick={() => { close(); setNewList(true); }}><Plus className="h-4 w-4" />New list…</button>
+                      </div>
+                    )}
+                  </Dropdown>
+                  {filters.listId && (
+                    <button className="btn-on-ink btn-sm" onClick={() => bulk('removeFromList', filters.listId, `removed from ${lists.find((l) => l.id === filters.listId)?.name ?? 'the list'}`)}><ListMinus className="h-3.5 w-3.5" />Remove from list</button>
+                  )}
                 </>
               )}
               {can('leads.delete') && (
@@ -336,6 +383,7 @@ export default function LeadsPage() {
 
       <LeadForm open={leadForm} onClose={() => setLeadForm(false)} />
       <ImportLeads open={importOpen} onClose={() => setImportOpen(false)} onDone={() => { list.reload(); reloadRefs(); }} />
+      <NewListModal open={newList} onClose={() => setNewList(false)} onCreated={(l) => { setNewList(false); if (selected.size) bulk('addToList', l.id, `added to ${l.name}`); else { toast(`List ${l.name} created`); reloadRefs(); } }} />
     </div>
   );
 }

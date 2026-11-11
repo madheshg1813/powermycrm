@@ -13,7 +13,7 @@
 - The Kanban board loads the 200 most recently active leads per pipeline.
 - Export is capped at 50,000 rows per file.
 - Custom fields cannot yet be used as filters, sort keys or list columns, and have no file-upload type or per-role visibility. A field's type cannot be changed after creation.
-- No lead lists or attachments yet.
+- Lead lists are static only: membership changes when a user adds or removes leads. No rule-based (dynamic) lists and no lead attachments yet.
 - Assignment rules are round-robin only (per source or all sources). They run when the owner is set to "Auto-assign by rule"; nothing creates leads automatically yet because integrations are not built.
 - Notifications are in-app only and refresh every 60 seconds (no WebSocket or push yet).
 - No multi-factor authentication, email verification or password-policy settings.

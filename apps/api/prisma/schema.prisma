@@ -84,6 +84,7 @@ model Organisation {
   customFields  CustomField[]
   savedFilters  SavedFilter[]
   assignRules   AssignmentRule[]
+  leadLists     LeadList[]
 }
 
 enum FieldType {
@@ -386,6 +387,7 @@ model Lead {
   labels       LeadLabel[]
   activities   LeadActivity[]
   tasks        Task[]
+  lists        LeadListMember[]
 
   @@index([organisationId, archivedAt, createdAt])
   @@index([organisationId, ownerId])
@@ -404,6 +406,35 @@ model LeadLabel {
 
   @@id([leadId, labelId])
   @@index([labelId])
+}
+
+/// A static, hand-picked set of leads (a calling list, a campaign batch). Membership only changes when a user changes it.
+model LeadList {
+  id             String   @id @default(cuid())
+  organisationId String
+  name           String
+  description    String?
+  createdById    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organisation Organisation     @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  members      LeadListMember[]
+
+  @@unique([organisationId, name])
+}
+
+model LeadListMember {
+  listId    String
+  leadId    String
+  addedAt   DateTime @default(now())
+  addedById String?
+
+  list LeadList @relation(fields: [listId], references: [id], onDelete: Cascade)
+  lead Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@id([listId, leadId])
+  @@index([leadId])
 }
 
 model LeadActivity {

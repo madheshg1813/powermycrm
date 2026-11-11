@@ -9,6 +9,7 @@ import { CatalogController } from './modules/catalog';
 import { CustomiseController } from './modules/customise';
 import { DashboardController } from './modules/dashboard';
 import { LeadsController, LeadsService } from './modules/leads';
+import { ListsController } from './modules/lists';
 import { OrgController } from './modules/org';
 import { TasksController } from './modules/tasks';
 
@@ -30,7 +31,7 @@ class HealthController {
       skipIf: () => process.env.NODE_ENV === 'test',
     }),
   ],
-  controllers: [HealthController, AuthController, OrgController, CatalogController, CustomiseController, LeadsController, TasksController, DashboardController],
+  controllers: [HealthController, AuthController, OrgController, CatalogController, CustomiseController, LeadsController, ListsController, TasksController, DashboardController],
   providers: [
     PrismaService,
     AuthService,

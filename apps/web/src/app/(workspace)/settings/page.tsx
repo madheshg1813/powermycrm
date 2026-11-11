@@ -1,5 +1,6 @@
 'use client';
 import { ArrowDown, ArrowUp, Check, Pencil, Plus, Trash2 } from 'lucide-react';
+import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { ColorDot, ErrorState, Field, PageHeader, Skeleton, Spinner, Tabs, useUi } from '@/components/ui';
 import { api, useApi } from '@/lib/api';
@@ -7,7 +8,7 @@ import { useAuth } from '@/lib/auth';
 import { fmtDateTime, relTime } from '@/lib/format';
 import { CustomField, FIELD_TYPES, Stage, useRefs } from '@/lib/refs';
 
-type Tab = 'account' | 'organisation' | 'pipeline' | 'sources' | 'labels' | 'fields' | 'rules';
+type Tab = 'account' | 'organisation' | 'pipeline' | 'sources' | 'labels' | 'fields' | 'lists' | 'rules';
 const COLORS = ['#2563EB', '#7C3AED', '#0E7490', '#168A4C', '#B54708', '#EA5A2A', '#B42318', '#78716C'];
 
 export default function SettingsPage() {
@@ -17,6 +18,7 @@ export default function SettingsPage() {
     { value: 'account', label: 'My account' },
     ...(can('settings.manage') ? [{ value: 'organisation' as Tab, label: 'Organisation' }] : []),
     ...(can('pipeline.manage') ? [{ value: 'pipeline' as Tab, label: 'Pipeline stages' }, { value: 'sources' as Tab, label: 'Lead sources' }, { value: 'labels' as Tab, label: 'Labels' }, { value: 'fields' as Tab, label: 'Lead fields' }] : []),
+    ...(can('leads.edit') ? [{ value: 'lists' as Tab, label: 'Lead lists' }] : []),
     ...(can('settings.manage') ? [{ value: 'rules' as Tab, label: 'Assignment rules' }] : []),
   ];
   return (
@@ -30,6 +32,7 @@ export default function SettingsPage() {
         {tab === 'sources' && <NamedList kind="sources" title="Lead sources" hint="Where your leads come from. Deleting a source keeps its leads and clears their source." />}
         {tab === 'labels' && <NamedList kind="labels" title="Labels" hint="Colour-coded tags for segmenting leads." withColor />}
         {tab === 'fields' && <LeadFields />}
+        {tab === 'lists' && <LeadLists />}
         {tab === 'rules' && <AssignmentRules />}
       </div>
     </div>
@@ -304,6 +307,58 @@ function LeadFields() {
         {hasOptions(f.type) && <Field label="Options" hint="Separate with commas" className="sm:col-span-2"><input className="input" value={f.options} onChange={(e) => setF({ ...f, options: e.target.value })} placeholder="2 BHK, 3 BHK, Villa" /></Field>}
         <label className="flex cursor-pointer items-center gap-2.5"><input type="checkbox" checked={f.required} onChange={(e) => setF({ ...f, required: e.target.checked })} /><span>Required when creating a lead</span></label>
         <div className="sm:col-span-2"><button className="btn-ink" disabled={busy || !f.label.trim() || (hasOptions(f.type) && !split(f.options).length)}><Plus className="h-4 w-4" />Add field</button></div>
+      </form>
+    </section>
+  );
+}
+
+function LeadLists() {
+  const { lists, reload, ready } = useRefs();
+  const { can } = useAuth();
+  const { confirm } = useUi();
+  const { busy, run } = useSave();
+  const [f, setF] = useState({ name: '', description: '' });
+  const [editing, setEditing] = useState<{ id: string; name: string; description: string } | null>(null);
+  const act = (fn: () => Promise<unknown>, ok: string) => run(() => fn().then(reload), ok);
+  const manages = (l: { mine: boolean }) => l.mine || can('pipeline.manage');
+
+  return (
+    <section className="card">
+      <div className="card-pad pb-3"><h2 className="card-title">Lead lists</h2><p className="text-ink-muted">Hand-picked sets of leads, such as a calling list or a campaign batch. Add leads from the Leads page by selecting them and choosing &ldquo;Add to list&rdquo;. Deleting a list never deletes its leads.</p></div>
+      {!ready ? <Skeleton rows={3} /> : (
+        <ul className="divide-y divide-ink/5 border-y border-ink/10">
+          {lists.map((l) => (
+            <li key={l.id} className="px-5 py-2.5">
+              {editing?.id === l.id ? (
+                <form className="grid gap-3 sm:grid-cols-2" onSubmit={async (e) => { e.preventDefault(); if (await act(() => api(`/lists/${l.id}`, { method: 'PATCH', body: { name: editing.name, description: editing.description || null } }), 'List saved')) setEditing(null); }}>
+                  <Field label="List name"><input className="input" value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} autoFocus maxLength={80} /></Field>
+                  <Field label="Description"><input className="input" value={editing.description} onChange={(e) => setEditing({ ...editing, description: e.target.value })} maxLength={300} /></Field>
+                  <div className="flex gap-2 sm:col-span-2"><button className="btn-ink btn-sm" disabled={busy || !editing.name.trim()}>Save</button><button type="button" className="btn-ghost btn-sm" onClick={() => setEditing(null)}>Cancel</button></div>
+                </form>
+              ) : (
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className="min-w-0 flex-1">
+                    <span className="font-medium">{l.name}</span>
+                    {l.description && <span className="block truncate text-[13px] text-ink-muted">{l.description}</span>}
+                  </span>
+                  <Link href={`/leads?listId=${l.id}`} className="text-[13px] text-ink-muted hover:text-ink hover:underline">{l.leads} lead{l.leads === 1 ? '' : 's'}</Link>
+                  {manages(l) && (
+                    <span className="flex">
+                      <button className="btn-icon" onClick={() => setEditing({ id: l.id, name: l.name, description: l.description ?? '' })} aria-label={`Edit ${l.name}`}><Pencil className="h-4 w-4" /></button>
+                      <button className="btn-icon" disabled={busy} aria-label={`Delete ${l.name}`} onClick={async () => { if (await confirm({ title: `Delete the list ${l.name}?`, text: 'The leads in it are kept; only the list is removed.', confirmLabel: 'Delete list', danger: true })) act(() => api(`/lists/${l.id}`, { method: 'DELETE' }), 'List deleted'); }}><Trash2 className="h-4 w-4" /></button>
+                    </span>
+                  )}
+                </div>
+              )}
+            </li>
+          ))}
+          {!lists.length && <li className="px-5 py-6 text-center text-ink-muted">No lists yet. Create one below, then add leads to it from the Leads page.</li>}
+        </ul>
+      )}
+      <form className="grid gap-3 card-pad sm:grid-cols-2" onSubmit={async (e) => { e.preventDefault(); if (await act(() => api('/lists', { body: { name: f.name, description: f.description || null } }), 'List created')) setF({ name: '', description: '' }); }}>
+        <Field label="New list name"><input className="input" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} maxLength={80} placeholder="Diwali offer calls" /></Field>
+        <Field label="Description" hint="Optional"><input className="input" value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} maxLength={300} placeholder="Call before the 20th" /></Field>
+        <div className="sm:col-span-2"><button className="btn-ink" disabled={busy || !f.name.trim()}><Plus className="h-4 w-4" />Create list</button></div>
       </form>
     </section>
   );
