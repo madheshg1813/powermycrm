@@ -718,6 +718,33 @@ describe('custom lead fields', () => {
     expect(csv[1].endsWith(',120,3 BHK,,,No')).toBe(true);
   });
 
+  it('filters and sorts the lead list by custom field', async () => {
+    await o.post('/custom-fields', { label: 'Area', type: 'TEXT' });
+    await o.post('/leads', { name: 'Filt C', phone: '9333300003', customFields: { property_type: '2 BHK', budget_lakhs: 50, amenities: ['Pool'], site_visit_on: '2026-11-15', area: 'Anna Nagar' } });
+    await o.post('/leads', { name: 'No budget', phone: '9333300004', customFields: { property_type: 'Villa' } });
+    const names = async (q: string) => (await o.get(`/leads?${q}`)).body.items.map((l: any) => l.name);
+    expect(await names('cf_property_type=villa&sort=name&dir=asc')).toEqual(['Good', 'No budget']);
+    expect(await names('cf_property_type=Castle')).toEqual([]);
+    expect(await names('cf_budget_lakhs_min=60&cf_budget_lakhs_max=100')).toEqual(['Good']);
+    expect(await names('cf_budget_lakhs_min=100')).toEqual(['Imp A']);
+    expect(await names('cf_budget_lakhs=50')).toEqual(['Filt C']);
+    expect(await names('cf_loan_needed=false')).toEqual(['Imp A']);
+    expect(await names('cf_amenities=pool')).toEqual(['Filt C']);
+    expect(await names('cf_site_visit_on_from=2026-11-20')).toEqual(['Good']);
+    expect(await names('cf_site_visit_on_to=2026-11-20')).toEqual(['Filt C']);
+    expect(await names('cf_area=nagar')).toEqual(['Filt C']);
+    expect(await names('cf_not_a_field=x&sort=name&dir=asc')).toHaveLength(4);
+    expect(await names('sort=cf_budget_lakhs&dir=asc')).toEqual(['Filt C', 'Good', 'Imp A', 'No budget']);
+    expect(await names('sort=cf_budget_lakhs&dir=desc')).toEqual(['Imp A', 'Good', 'Filt C', 'No budget']);
+    // Equal values fall back to newest first, like the built-in sorts.
+    expect(await names('sort=cf_property_type&dir=asc&pageSize=2&page=2')).toEqual(['No budget', 'Good']);
+    expect((await o.get('/leads?sort=cf_budget_lakhs&dir=desc')).body.total).toBe(4);
+    expect((await o.get('/leads?sort=cf_nope')).status).toBe(400);
+    expect((await o.get('/leads/export?cf_property_type=2 BHK')).text.trim().split('\r\n')).toHaveLength(2);
+    const agent = await addMember(o, 'Sales Agent');
+    expect((await agent.get('/leads?cf_property_type=villa')).body.total).toBe(0);
+  });
+
   it('renames a field without losing values and removes values when the field is deleted', async () => {
     const fields = (await o.get('/custom-fields')).body;
     const budget = fields.find((f: any) => f.key === 'budget_lakhs');

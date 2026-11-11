@@ -15,7 +15,7 @@ the browser, **None** = untested. Rows marked (ext) go beyond what TeleCRM docum
 | Transfer leads between users/teams | /features 4.1 | Single and bulk reassign, notification to new owner | Testing | API; screen None |
 | Customisable sales pipelines | /features 4.1 | Multiple pipelines, custom stages, colours, order, Kanban | Testing | API + Manual (drag untested) |
 | Bulk edit leads | /features 4.2 | Bulk assign, stage, label, archive, restore | Testing | API; screen None |
-| Custom lead fields | /lead-management-system | 10 field types, required flag, order, lead form, lead page, import and export. No filter/sort by custom field, no file-upload type, no per-role visibility | Testing | API + Manual (add field, form shows it) |
+| Custom lead fields | /lead-management-system | 10 field types, required flag, order, lead form, lead page, import and export, filter and sort the lead list by any field, optional list columns (remembered per browser). No file-upload type, no per-role visibility | Testing | API + Manual |
 | Saved views of the lead list (ext) | — | Private or shared named filter sets | Testing | API; screen None |
 | Lead scoring | /lead-management-system | Manual 0–100 score, sortable. No rules | Backend In Progress | API |
 | Labels | /crm-with-dialer | Colour labels, filter, bulk add/remove | Testing | API; screen None |

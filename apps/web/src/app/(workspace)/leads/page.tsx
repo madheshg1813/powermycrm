@@ -1,5 +1,5 @@
 'use client';
-import { Archive, ArchiveRestore, ArrowDown, ArrowUp, Bookmark, Download, ListMinus, ListPlus, Plus, Search, Tag, Upload, UserRound, Users, X } from 'lucide-react';
+import { Archive, ArchiveRestore, ArrowDown, ArrowUp, Bookmark, Columns3, Download, ListMinus, ListPlus, Plus, Search, SlidersHorizontal, Tag, Upload, UserRound, Users, X } from 'lucide-react';
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { LeadForm } from '@/components/forms';
@@ -7,8 +7,8 @@ import { ImportLeads } from '@/components/import-leads';
 import { Avatar, ColorDot, Dropdown, EmptyState, ErrorState, Field, LabelChip, Modal, PageHeader, Pagination, Skeleton, Spinner, Tabs, cx, useUi } from '@/components/ui';
 import { api, qs, useApi } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
-import { fmtDate, money, relTime } from '@/lib/format';
-import { Lead, useChanged, useRefs } from '@/lib/refs';
+import { fmtCustom, fmtDate, money, relTime } from '@/lib/format';
+import { CustomField, Lead, useChanged, useRefs } from '@/lib/refs';
 
 type View = 'all' | 'mine' | 'unassigned' | 'archived';
 type Filters = { q: string; stageId: string; sourceId: string; ownerId: string; labelId: string; listId: string; status: string; createdFrom: string; createdTo: string; closedFrom: string; closedTo: string };
@@ -26,6 +26,39 @@ const COLUMNS: { key: string; label: string; sort?: string; className?: string }
 ];
 
 type SavedView = { id: string; name: string; filters: Record<string, string>; shared: boolean; mine: boolean };
+type Cf = Record<string, string>;
+const COLUMNS_KEY = 'pmc:leadColumns';
+
+/** One filter control per custom field. Values are sent as cf_<key> query parameters, so they also work in links and saved views. */
+function CustomFilters({ fields, cf, onChange }: { fields: CustomField[]; cf: Cf; onChange: (next: Cf) => void }) {
+  const set = (k: string, v: string) => onChange({ ...cf, [k]: v });
+  const active = Object.values(cf).filter(Boolean).length;
+  return (
+    <Dropdown align="left" className="w-80 max-w-[calc(100vw-24px)] p-3" trigger={() => <button className={cx('btn-ghost btn-sm', active > 0 && 'border-ink')}><SlidersHorizontal className="h-3.5 w-3.5" />More filters{active ? ` (${active})` : ''}</button>}>
+      {() => (
+        <div className="max-h-[70vh] space-y-3 overflow-y-auto">
+          {fields.map((f) => {
+            const k = `cf_${f.key}`;
+            if (f.type === 'NUMBER') return (
+              <div key={f.id}><span className="label">{f.label}</span><div className="flex items-center gap-2"><input className="input" type="number" step="any" placeholder="Min" value={cf[`${k}_min`] ?? ''} onChange={(e) => set(`${k}_min`, e.target.value)} aria-label={`${f.label} minimum`} /><span className="text-ink-muted">to</span><input className="input" type="number" step="any" placeholder="Max" value={cf[`${k}_max`] ?? ''} onChange={(e) => set(`${k}_max`, e.target.value)} aria-label={`${f.label} maximum`} /></div></div>
+            );
+            if (f.type === 'DATE') return (
+              <div key={f.id}><span className="label">{f.label}</span><div className="flex items-center gap-2"><input className="input" type="date" value={cf[`${k}_from`] ?? ''} onChange={(e) => set(`${k}_from`, e.target.value)} aria-label={`${f.label} from`} /><span className="text-ink-muted">to</span><input className="input" type="date" value={cf[`${k}_to`] ?? ''} onChange={(e) => set(`${k}_to`, e.target.value)} aria-label={`${f.label} to`} /></div></div>
+            );
+            if (f.type === 'DROPDOWN' || f.type === 'MULTI_SELECT') return (
+              <Field key={f.id} label={f.label}><select className="input" value={cf[k] ?? ''} onChange={(e) => set(k, e.target.value)}><option value="">Any</option>{f.options.map((o) => <option key={o}>{o}</option>)}</select></Field>
+            );
+            if (f.type === 'CHECKBOX') return (
+              <Field key={f.id} label={f.label}><select className="input" value={cf[k] ?? ''} onChange={(e) => set(k, e.target.value)}><option value="">Any</option><option value="true">Yes</option><option value="false">No</option></select></Field>
+            );
+            return <Field key={f.id} label={f.label}><input className="input" placeholder="Contains…" value={cf[k] ?? ''} onChange={(e) => set(k, e.target.value)} /></Field>;
+          })}
+          {active > 0 && <button className="btn-ghost btn-sm" onClick={() => onChange({})}><X className="h-3.5 w-3.5" />Clear these</button>}
+        </div>
+      )}
+    </Dropdown>
+  );
+}
 
 /** Named filter sets. A view is private unless its creator shares it with the workspace. */
 function SavedViews({ current, canSave, onApply }: { current: Record<string, string>; canSave: boolean; onApply: (f: Record<string, string>) => void }) {
@@ -117,10 +150,12 @@ function NewListModal({ open, onClose, onCreated }: { open: boolean; onClose: ()
 
 export default function LeadsPage() {
   const { me, can } = useAuth();
-  const { pipelines, sources, labels, lists, members, reload: reloadRefs } = useRefs();
+  const { pipelines, sources, labels, lists, members, fields, reload: reloadRefs } = useRefs();
   const { toast, confirm } = useUi();
   const [view, setView] = useState<View>('all');
   const [filters, setFilters] = useState<Filters>(noFilters);
+  const [cf, setCf] = useState<Cf>({});
+  const [extraCols, setExtraCols] = useState<string[]>([]);
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState({ by: 'createdAt', dir: 'desc' });
   const [page, setPage] = useState(1);
@@ -137,24 +172,30 @@ export default function LeadsPage() {
     const f = { ...noFilters };
     (Object.keys(noFilters) as (keyof Filters)[]).forEach((k) => { if (p.get(k)) f[k] = p.get(k)!; });
     if (f.ownerId === 'me') { setView('mine'); f.ownerId = ''; }
+    const custom: Cf = {};
+    p.forEach((v, k) => { if (k.startsWith('cf_') && v) custom[k] = v; });
+    setCf(custom);
     setFilters(f);
     setSearch(f.q);
+    try { const saved = JSON.parse(localStorage.getItem(COLUMNS_KEY) ?? '[]'); if (Array.isArray(saved)) setExtraCols(saved.filter((x) => typeof x === 'string')); } catch { /* ignore */ }
     setReady(true);
   }, []);
+  const toggleColumn = (key: string) => setExtraCols((c) => { const next = c.includes(key) ? c.filter((x) => x !== key) : [...c, key]; try { localStorage.setItem(COLUMNS_KEY, JSON.stringify(next)); } catch { /* ignore */ } return next; });
 
   useEffect(() => {
     const t = setTimeout(() => setFilters((f) => (f.q === search.trim() ? f : { ...f, q: search.trim() })), 300);
     return () => clearTimeout(t);
   }, [search]);
-  useEffect(() => { setPage(1); setSelected(new Set()); }, [filters, view, sort]);
+  useEffect(() => { setPage(1); setSelected(new Set()); }, [filters, cf, view, sort]);
 
   const query = useMemo(() => ({
+    ...cf,
     ...filters,
     ownerId: view === 'mine' ? 'me' : view === 'unassigned' ? 'unassigned' : filters.ownerId,
     archived: view === 'archived' ? 'true' : 'false',
     sort: sort.by,
     dir: sort.dir,
-  }), [filters, view, sort]);
+  }), [filters, cf, view, sort]);
   const list = useApi<{ items: Lead[]; total: number; page: number; pageSize: number }>(ready ? `/leads${qs({ ...query, page, pageSize: 25 })}` : null);
   const reload = useCallback(() => { list.reload(); }, [list]);
   useChanged(reload);
@@ -162,7 +203,9 @@ export default function LeadsPage() {
   const stages = pipelines.flatMap((p) => p.stages.map((s) => ({ ...s, pipeline: p.name })));
   const items = list.data?.items ?? [];
   const allSelected = items.length > 0 && items.every((l) => selected.has(l.id));
-  const activeFilters = (Object.keys(noFilters) as (keyof Filters)[]).filter((k) => k !== 'q' && filters[k]).length;
+  const activeFilters = (Object.keys(noFilters) as (keyof Filters)[]).filter((k) => k !== 'q' && filters[k]).length + Object.values(cf).filter(Boolean).length;
+  const visibleFields = fields.filter((f) => extraCols.includes(f.key));
+  const columns = [...COLUMNS, ...visibleFields.map((f) => ({ key: `cf_${f.key}`, label: f.label, sort: `cf_${f.key}`, className: f.type === 'NUMBER' ? 'text-right' : undefined }))];
   const dateFilters = DATE_KEYS.filter((k) => filters[k]).length;
   const setFilter = (k: keyof Filters) => (e: React.ChangeEvent<HTMLSelectElement>) => setFilters((f) => ({ ...f, [k]: e.target.value }));
 
@@ -265,15 +308,29 @@ export default function LeadsPage() {
           <span className="pill-muted gap-1 py-1 pr-1">Closed {filters.closedFrom ? shortDate(filters.closedFrom) : '…'} – {filters.closedTo ? shortDate(filters.closedTo) : '…'}
             <button className="rounded-full p-0.5 hover:bg-ink/10" onClick={() => setFilters((f) => ({ ...f, closedFrom: '', closedTo: '' }))} aria-label="Clear closed date filter"><X className="h-3 w-3" /></button></span>
         )}
+        {fields.length > 0 && <CustomFilters fields={fields} cf={cf} onChange={setCf} />}
         {(activeFilters > 0 || filters.q) && (
-          <button className="btn-ghost btn-sm" onClick={() => { setFilters(noFilters); setSearch(''); }}><X className="h-3.5 w-3.5" />Clear</button>
+          <button className="btn-ghost btn-sm" onClick={() => { setFilters(noFilters); setCf({}); setSearch(''); }}><X className="h-3.5 w-3.5" />Clear</button>
+        )}
+        {fields.length > 0 && (
+          <Dropdown className="w-64" trigger={() => <button className="btn-ghost btn-sm"><Columns3 className="h-3.5 w-3.5" />Columns</button>}>
+            {() => (
+              <div className="max-h-72 overflow-y-auto">
+                <p className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-ink-muted">Custom fields</p>
+                {fields.map((f) => (
+                  <label key={f.id} className="menu-item cursor-pointer"><input type="checkbox" checked={extraCols.includes(f.key)} onChange={() => toggleColumn(f.key)} /><span className="truncate">{f.label}</span></label>
+                ))}
+              </div>
+            )}
+          </Dropdown>
         )}
         <SavedViews
-          current={{ ...filters, view }}
+          current={{ ...cf, ...filters, view }}
           canSave={activeFilters > 0 || !!filters.q || view !== 'all'}
           onApply={(v) => {
             const f = { ...noFilters };
             (Object.keys(noFilters) as (keyof Filters)[]).forEach((k) => { if (v[k]) f[k] = v[k]; });
+            setCf(Object.fromEntries(Object.entries(v).filter(([k, x]) => k.startsWith('cf_') && x)));
             setFilters(f);
             setSearch(f.q);
             setView((['all', 'mine', 'unassigned', 'archived'] as View[]).includes(v.view as View) ? (v.view as View) : 'all');
@@ -356,7 +413,7 @@ export default function LeadsPage() {
                 <thead>
                   <tr>
                     {canBulk && <th className="w-10 pl-4"><input type="checkbox" checked={allSelected} onChange={() => setSelected(allSelected ? new Set() : new Set(items.map((l) => l.id)))} aria-label="Select all on this page" /></th>}
-                    {COLUMNS.map((c) => (
+                    {columns.map((c) => (
                       <th key={c.key} className={c.className} aria-sort={c.sort && sort.by === c.sort ? (sort.dir === 'asc' ? 'ascending' : 'descending') : undefined}>
                         {c.sort ? (
                           <button className="inline-flex items-center gap-1 hover:text-ink" onClick={() => sortBy(c.sort!)}>
@@ -383,6 +440,10 @@ export default function LeadsPage() {
                       <td className="hidden text-right lg:table-cell">{money(l.dealValue, me?.organisation.currency)}</td>
                       <td className="hidden text-ink-muted xl:table-cell">{relTime(l.lastActivityAt)}</td>
                       <td className="hidden text-ink-muted sm:table-cell">{fmtDate(l.createdAt)}</td>
+                      {visibleFields.map((f) => {
+                        const text = fmtCustom(f.type, l.customFields?.[f.key]);
+                        return <td key={f.id} className={cx('max-w-[220px] truncate', f.type === 'NUMBER' && 'text-right')} title={text}>{text || <span className="text-ink-faint">&mdash;</span>}</td>;
+                      })}
                     </tr>
                   ))}
                 </tbody>

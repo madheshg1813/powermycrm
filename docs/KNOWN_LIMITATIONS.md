@@ -12,7 +12,7 @@
 - Import accepts CSV only. Excel files must be saved as CSV first.
 - The Kanban board loads the 200 most recently active leads per pipeline.
 - Export is capped at 50,000 rows per file.
-- Custom fields cannot yet be used as filters, sort keys or list columns, and have no file-upload type or per-role visibility. A field's type cannot be changed after creation.
+- Custom fields have no file-upload type or per-role visibility, and a field's type cannot be changed after creation. Sorting the lead list by a custom field orders the matching rows in the API process (capped at 50,000 rows) because JSON values are not indexed; built-in columns sort in the database.
 - Lead lists are static only: membership changes when a user adds or removes leads. No rule-based (dynamic) lists and no lead attachments yet.
 - Assignment rules are round-robin only (per source or all sources). They run when the owner is set to "Auto-assign by rule"; nothing creates leads automatically yet because integrations are not built.
 - Reports export to CSV only (no Excel), cover at most one year per query, and have no custom report builder or scheduled delivery. "Won" and "lost" are counted on the day a lead entered its current closing stage, so a lead moved from Won back to an open stage no longer counts as won.

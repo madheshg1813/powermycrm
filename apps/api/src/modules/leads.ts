@@ -83,6 +83,48 @@ export function cleanCustomValue(f: FieldDef, raw: unknown): { value: unknown } 
       return { error: 'has an unknown type' };
   }
 }
+/**
+ * Translates `cf_<key>` query parameters into JSON filters on Lead.customFields, by field type:
+ * text-like fields match case-insensitively on a substring; numbers take `cf_<key>`, `_min` and `_max`; dates take `cf_<key>`,
+ * `_from` and `_to`; dropdowns match one option; multi-selects match leads that include the option; checkboxes take true/false.
+ * Keys that are not fields are ignored.
+ */
+export function customFilters(defs: FieldDef[], query: Record<string, unknown>): Prisma.LeadWhereInput[] {
+  const and: Prisma.LeadWhereInput[] = [];
+  const str = (k: string) => { const v = query[k]; return typeof v === 'string' && v.trim() ? v.trim() : undefined; };
+  const num = (k: string) => { const v = str(k); return v !== undefined && Number.isFinite(Number(v)) ? Number(v) : undefined; };
+  for (const f of defs) {
+    const path = [f.key];
+    const k = `cf_${f.key}`;
+    const v = str(k);
+    const option = (x: string) => f.options.find((o) => o.toLowerCase() === x.toLowerCase());
+    if (f.type === 'NUMBER') {
+      const eq = num(k), min = num(`${k}_min`), max = num(`${k}_max`);
+      if (eq !== undefined) and.push({ customFields: { path, equals: eq } });
+      if (min !== undefined) and.push({ customFields: { path, gte: min } });
+      if (max !== undefined) and.push({ customFields: { path, lte: max } });
+    } else if (f.type === 'DATE') {
+      const from = str(`${k}_from`), to = str(`${k}_to`);
+      if (v) and.push({ customFields: { path, equals: v.slice(0, 10) } });
+      if (from) and.push({ customFields: { path, gte: from.slice(0, 10) } });
+      if (to) and.push({ customFields: { path, lte: to.slice(0, 10) } });
+    } else if (!v) {
+      continue;
+    } else if (f.type === 'DROPDOWN' || f.type === 'MULTI_SELECT') {
+      const o = option(v);
+      // An option that does not exist can match nothing.
+      if (!o) and.push({ id: '' });
+      else and.push({ customFields: f.type === 'DROPDOWN' ? { path, equals: o } : { path, array_contains: [o] } });
+    } else if (f.type === 'CHECKBOX') {
+      if (v === 'true' || v === 'false') and.push({ customFields: { path, equals: v === 'true' } });
+    } else {
+      and.push({ customFields: { path, string_contains: v, mode: 'insensitive' } });
+    }
+  }
+  return and;
+}
+
+const BASE_SORTS = ['createdAt', 'updatedAt', 'name', 'score', 'dealValue', 'lastActivityAt'];
 const createSchema = z.object({ name: z.string().trim().min(1, 'Enter a name').max(160), ...leadFields, allowDuplicate: z.boolean().optional() });
 const updateSchema = z.object({ name: z.string().trim().min(1).max(160).optional(), ...leadFields });
 
@@ -102,7 +144,8 @@ const listSchema = z.object({
   // When the lead entered its current won/lost stage; used by report drill-downs.
   closedFrom: z.coerce.date().optional(),
   closedTo: z.coerce.date().optional(),
-  sort: z.enum(['createdAt', 'updatedAt', 'name', 'score', 'dealValue', 'lastActivityAt']).default('createdAt'),
+  // A built-in column, or `cf_<key>` for a custom field.
+  sort: z.string().regex(/^[A-Za-z0-9_]+$/).default('createdAt').refine((s) => BASE_SORTS.includes(s) || s.startsWith('cf_'), 'Unknown sort field'),
   dir: z.enum(['asc', 'desc']).default('desc'),
 });
 
@@ -165,8 +208,8 @@ export class LeadsService {
     return ids.length === 1 ? { ownerId: ids[0] } : { ownerId: { in: ids } };
   }
 
-  private async where(ctx: Ctx, f: z.infer<typeof listSchema>): Promise<Prisma.LeadWhereInput> {
-    const and: Prisma.LeadWhereInput[] = [await this.scope(ctx)];
+  private async where(ctx: Ctx, f: z.infer<typeof listSchema>, query: unknown, defs: FieldDef[]): Promise<Prisma.LeadWhereInput> {
+    const and: Prisma.LeadWhereInput[] = [await this.scope(ctx), ...customFilters(defs, (query ?? {}) as Record<string, unknown>)];
     if (f.q) {
       const digits = f.q.replace(/\D/g, '');
       and.push({
@@ -195,19 +238,49 @@ export class LeadsService {
 
   async list(ctx: Ctx, query: unknown) {
     const f = parse(listSchema, query);
-    const where = await this.where(ctx, f);
+    const defs = await this.fieldDefs(ctx);
+    const where = await this.where(ctx, f, query, defs);
+    if (f.sort.startsWith('cf_')) return this.listByCustomField(f, where, defs);
     const [rows, total] = await Promise.all([
       this.prisma.lead.findMany({
         where,
         include,
         // Only nullable columns accept a nulls position; empty deal values always sort last.
-        orderBy: [f.sort === 'dealValue' ? { dealValue: { sort: f.dir, nulls: 'last' } } : { [f.sort]: f.dir }, { id: 'desc' }],
+        orderBy: [f.sort === 'dealValue' ? { dealValue: { sort: f.dir, nulls: 'last' } } : ({ [f.sort]: f.dir } as Prisma.LeadOrderByWithRelationInput), { id: 'desc' }],
         skip: (f.page - 1) * f.pageSize,
         take: f.pageSize,
       }),
       this.prisma.lead.count({ where }),
     ]);
     return { items: rows.map(serialize), total, page: f.page, pageSize: f.pageSize };
+  }
+
+  /**
+   * Sorting by a custom field. JSON values cannot be ordered through Prisma, so the matching ids are ordered here
+   * (up to the same 50,000-row cap as export) and the page is fetched by id. Leads without a value always sort last.
+   */
+  private async listByCustomField(f: z.infer<typeof listSchema>, where: Prisma.LeadWhereInput, defs: FieldDef[]) {
+    const def = defs.find((d) => `cf_${d.key}` === f.sort);
+    if (!def) throw new BadRequestException('Unknown sort field');
+    const all = await this.prisma.lead.findMany({ where, select: { id: true, customFields: true }, take: 50_000 });
+    const value = (cf: unknown) => {
+      const v = (cf as Record<string, unknown> | null)?.[def.key];
+      return v === undefined || v === null || v === '' || (Array.isArray(v) && !v.length) ? null : v;
+    };
+    const rank = (v: unknown) => (def.type === 'NUMBER' || def.type === 'CHECKBOX' ? Number(v) : String(Array.isArray(v) ? v.join(', ') : v).toLowerCase());
+    const byId = (a: { id: string }, b: { id: string }) => (a.id < b.id ? 1 : -1);
+    all.sort((a, b) => {
+      const va = value(a.customFields), vb = value(b.customFields);
+      if (va === null || vb === null) return va === vb ? byId(a, b) : va === null ? 1 : -1;
+      const ra = rank(va), rb = rank(vb);
+      const c = ra < rb ? -1 : ra > rb ? 1 : 0;
+      return (f.dir === 'asc' ? c : -c) || byId(a, b);
+    });
+    const ids = all.slice((f.page - 1) * f.pageSize, f.page * f.pageSize).map((x) => x.id);
+    const rows = await this.prisma.lead.findMany({ where: { id: { in: ids } }, include });
+    const order = new Map(ids.map((id, i) => [id, i]));
+    rows.sort((a, b) => order.get(a.id)! - order.get(b.id)!);
+    return { items: rows.map(serialize), total: all.length, page: f.page, pageSize: f.pageSize };
   }
 
   fieldDefs(ctx: Ctx) {
@@ -264,10 +337,8 @@ export class LeadsService {
 
   async exportCsv(ctx: Ctx, query: unknown) {
     const f = parse(listSchema, query);
-    const [rows, defs] = await Promise.all([
-      this.prisma.lead.findMany({ where: await this.where(ctx, f), include, orderBy: { createdAt: 'desc' }, take: 50_000 }),
-      this.fieldDefs(ctx),
-    ]);
+    const defs = await this.fieldDefs(ctx);
+    const rows = await this.prisma.lead.findMany({ where: await this.where(ctx, f, query, defs), include, orderBy: { createdAt: 'desc' }, take: 50_000 });
     const head = ['Name', 'Phone', 'Email', 'Company', 'City', 'Source', 'Stage', 'Owner', 'Labels', 'Score', 'Deal value', 'Expected close', 'Created', ...defs.map((d) => d.label)].map(csvCell);
     const show = (v: unknown) => (Array.isArray(v) ? v.join('; ') : v === true ? 'Yes' : v === false ? 'No' : v);
     const lines = rows.map((l) =>

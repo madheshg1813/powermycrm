@@ -30,6 +30,16 @@ export function toLocalInput(d?: string | Date | null) {
   return new Date(x.getTime() - x.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
 }
 
+/** Displays a stored custom-field value as text. */
+export function fmtCustom(type: string, v: unknown): string {
+  if (v === undefined || v === null || v === '' || (Array.isArray(v) && !v.length)) return '';
+  if (type === 'CHECKBOX') return v ? 'Yes' : 'No';
+  if (type === 'DATE') return fmtDate(String(v));
+  if (type === 'NUMBER') return Number(v).toLocaleString('en-IN');
+  if (type === 'URL') return String(v).replace(/^https?:\/\//, '');
+  return Array.isArray(v) ? v.join(', ') : String(v);
+}
+
 export const initials = (name: string) =>
   name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]!.toUpperCase()).join('') || '?';
 
