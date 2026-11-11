@@ -11,8 +11,10 @@ import { fmtDate, money, relTime } from '@/lib/format';
 import { Lead, useChanged, useRefs } from '@/lib/refs';
 
 type View = 'all' | 'mine' | 'unassigned' | 'archived';
-type Filters = { q: string; stageId: string; sourceId: string; ownerId: string; labelId: string; listId: string; status: string };
-const noFilters: Filters = { q: '', stageId: '', sourceId: '', ownerId: '', labelId: '', listId: '', status: '' };
+type Filters = { q: string; stageId: string; sourceId: string; ownerId: string; labelId: string; listId: string; status: string; createdFrom: string; createdTo: string; closedFrom: string; closedTo: string };
+const noFilters: Filters = { q: '', stageId: '', sourceId: '', ownerId: '', labelId: '', listId: '', status: '', createdFrom: '', createdTo: '', closedFrom: '', closedTo: '' };
+const DATE_KEYS = ['createdFrom', 'createdTo', 'closedFrom', 'closedTo'] as const;
+const shortDate = (iso: string) => new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
 const COLUMNS: { key: string; label: string; sort?: string; className?: string }[] = [
   { key: 'name', label: 'Lead', sort: 'name' },
   { key: 'stage', label: 'Stage' },
@@ -161,6 +163,7 @@ export default function LeadsPage() {
   const items = list.data?.items ?? [];
   const allSelected = items.length > 0 && items.every((l) => selected.has(l.id));
   const activeFilters = (Object.keys(noFilters) as (keyof Filters)[]).filter((k) => k !== 'q' && filters[k]).length;
+  const dateFilters = DATE_KEYS.filter((k) => filters[k]).length;
   const setFilter = (k: keyof Filters) => (e: React.ChangeEvent<HTMLSelectElement>) => setFilters((f) => ({ ...f, [k]: e.target.value }));
 
   async function bulk(action: string, value?: string | null, label?: string) {
@@ -254,6 +257,14 @@ export default function LeadsPage() {
             {lists.map((l) => <option key={l.id} value={l.id}>{l.name} ({l.leads})</option>)}
           </select>
         )}
+        {(filters.createdFrom || filters.createdTo) && (
+          <span className="pill-muted gap-1 py-1 pr-1">Created {filters.createdFrom ? shortDate(filters.createdFrom) : '…'} – {filters.createdTo ? shortDate(filters.createdTo) : '…'}
+            <button className="rounded-full p-0.5 hover:bg-ink/10" onClick={() => setFilters((f) => ({ ...f, createdFrom: '', createdTo: '' }))} aria-label="Clear created date filter"><X className="h-3 w-3" /></button></span>
+        )}
+        {(filters.closedFrom || filters.closedTo) && (
+          <span className="pill-muted gap-1 py-1 pr-1">Closed {filters.closedFrom ? shortDate(filters.closedFrom) : '…'} – {filters.closedTo ? shortDate(filters.closedTo) : '…'}
+            <button className="rounded-full p-0.5 hover:bg-ink/10" onClick={() => setFilters((f) => ({ ...f, closedFrom: '', closedTo: '' }))} aria-label="Clear closed date filter"><X className="h-3 w-3" /></button></span>
+        )}
         {(activeFilters > 0 || filters.q) && (
           <button className="btn-ghost btn-sm" onClick={() => { setFilters(noFilters); setSearch(''); }}><X className="h-3.5 w-3.5" />Clear</button>
         )}
@@ -337,7 +348,7 @@ export default function LeadsPage() {
           : !list.data ? <Skeleton rows={8} />
           : !items.length ? (
             activeFilters || filters.q || view !== 'all'
-              ? <EmptyState icon={Search} title="No leads match" text="Try a different search or clear the filters." />
+              ? <EmptyState icon={Search} title="No leads match" text={dateFilters ? 'No leads in this date range match. Clear the date filter to widen the search.' : 'Try a different search or clear the filters.'} />
               : <EmptyState icon={Users} title="No leads yet" text="Add your first lead or import a CSV file to get started." action={can('leads.create') ? <button className="btn-primary" onClick={() => setLeadForm(true)}><Plus className="h-4 w-4" />New lead</button> : undefined} />
           ) : (
             <div className={cx('overflow-x-auto', list.loading && 'opacity-60')}>

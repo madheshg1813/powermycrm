@@ -1,6 +1,6 @@
 'use client';
 import {
-  Bell, Building2, CalendarCheck, ChevronsLeft, ChevronsRight, ChevronDown, Columns3, LayoutDashboard, Menu, Plus, Search, Settings, UserPlus, Users, UsersRound,
+  BarChart3, Bell, Building2, CalendarCheck, ChevronsLeft, ChevronsRight, ChevronDown, Columns3, LayoutDashboard, Menu, Plus, Search, Settings, UserPlus, Users, UsersRound,
 } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
@@ -37,6 +37,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
     { href: '/leads', label: 'Leads', icon: Users, show: can('leads.view') },
     { href: '/pipeline', label: 'Pipeline', icon: Columns3, show: can('leads.view') },
     { href: '/follow-ups', label: 'Follow-ups', icon: CalendarCheck, badge: overdue.data?.counts.overdue },
+    { href: '/reports', label: 'Reports', icon: BarChart3, show: can('reports.view') },
   ];
   const setup: NavItem[] = [
     { href: '/team', label: 'Team', icon: UsersRound, show: can('users.view') || can('users.manage') || can('roles.manage') },

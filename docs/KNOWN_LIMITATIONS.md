@@ -15,6 +15,7 @@
 - Custom fields cannot yet be used as filters, sort keys or list columns, and have no file-upload type or per-role visibility. A field's type cannot be changed after creation.
 - Lead lists are static only: membership changes when a user adds or removes leads. No rule-based (dynamic) lists and no lead attachments yet.
 - Assignment rules are round-robin only (per source or all sources). They run when the owner is set to "Auto-assign by rule"; nothing creates leads automatically yet because integrations are not built.
+- Reports export to CSV only (no Excel), cover at most one year per query, and have no custom report builder or scheduled delivery. "Won" and "lost" are counted on the day a lead entered its current closing stage, so a lead moved from Won back to an open stage no longer counts as won.
 - Notifications are in-app only and refresh every 60 seconds (no WebSocket or push yet).
 - No multi-factor authentication, email verification or password-policy settings.
 - The audit log has an API endpoint but no screen.

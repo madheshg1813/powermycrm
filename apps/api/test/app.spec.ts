@@ -560,6 +560,102 @@ describe('dashboard accuracy', () => {
   });
 });
 
+describe('reports', () => {
+  it('computes period summaries, the leaderboard, source and follow-up reports from stored records', async () => {
+    const o = await registerOrg('Reports');
+    const agent = await addMember(o, 'Sales Agent');
+    const prisma = app.get(PrismaService);
+    const stages = (await o.get('/pipelines')).body[0].stages;
+    const by = (name: string) => stages.find((s: any) => s.name === name).id;
+    const src = (await o.get('/sources')).body;
+    const day = (offset: number) => new Date(Date.now() + offset * 864e5).toISOString().slice(0, 10);
+    const at = (h: number) => new Date(Date.now() + h * 3600e3).toISOString();
+
+    const l1 = (await o.post('/leads', { name: 'R Open', dealValue: 1000, sourceId: src[0].id })).body;
+    const l2 = (await o.post('/leads', { name: 'R Won', dealValue: 5000 })).body;
+    await o.patch(`/leads/${l2.id}`, { stageId: by('Won') });
+    const l3 = (await o.post('/leads', { name: 'R Lost' })).body;
+    await o.patch(`/leads/${l3.id}`, { stageId: by('Lost') });
+    const l4 = (await agent.post('/leads', { name: 'R Agent Won', dealValue: 2000 })).body;
+    await agent.patch(`/leads/${l4.id}`, { stageId: by('Won') });
+    const l5 = (await o.post('/leads', { name: 'R Old' })).body;
+    await prisma.lead.update({ where: { id: l5.id }, data: { createdAt: new Date(Date.now() - 45 * 864e5) } });
+    const archived = (await o.post('/leads', { name: 'R Archived', dealValue: 99999, stageId: by('Won') })).body;
+    await o.post('/leads/bulk', { ids: [archived.id], action: 'archive' });
+    await o.post(`/leads/${l1.id}/notes`, { body: 'Called, call again tomorrow' });
+    await o.post('/tasks', { title: 'Overdue', dueAt: at(-24), leadId: l1.id });
+    const t2 = (await o.post('/tasks', { title: 'Done early', dueAt: at(24) })).body;
+    await o.patch(`/tasks/${t2.id}`, { status: 'DONE' });
+    const t3 = (await o.post('/tasks', { title: 'Done late', dueAt: at(-48) })).body;
+    await o.patch(`/tasks/${t3.id}`, { status: 'DONE' });
+
+    // Wide range: the backdated lead counts; the archived lead never does.
+    const wide = (await o.get(`/reports/summary?from=${day(-60)}&to=${day(1)}`)).body;
+    expect(wide.totals).toMatchObject({ created: 5, won: 2, lost: 1, wonValue: 7000, openNow: 2 });
+    expect(wide.totals.conversion).toBeCloseTo(2 / 3);
+    expect(wide.range.timezone).toBe('Asia/Kolkata');
+
+    const week = (await o.get(`/reports/summary?from=${day(-7)}&to=${day(1)}`)).body;
+    expect(week.totals).toMatchObject({ created: 4, won: 2, lost: 1, wonValue: 7000 });
+    expect(week.series).toHaveLength(9);
+    const todayRow = week.series.find((s: any) => s.created === 4);
+    expect(todayRow).toMatchObject({ won: 2, lost: 1, wonValue: 7000 });
+    expect((await o.get(`/leads?createdFrom=${todayRow.fromAt}&createdTo=${todayRow.toAt}`)).body.total).toBe(4);
+    const sum = (series: any[], k: string) => series.reduce((a, s) => a + s[k], 0);
+    const hours = (await o.get(`/reports/summary?from=${day(-1)}&to=${day(1)}&unit=hour`)).body;
+    expect(hours.series).toHaveLength(24);
+    expect(sum(hours.series, 'created')).toBe(4);
+    const months = (await o.get(`/reports/summary?from=${day(-60)}&to=${day(1)}&unit=month`)).body;
+    expect(sum(months.series, 'created')).toBe(5);
+    expect(sum((await o.get(`/reports/summary?from=${day(-60)}&to=${day(1)}&unit=week`)).body.series, 'won')).toBe(2);
+    expect((await o.get(`/reports/summary?from=${day(-7)}&to=${day(1)}&sourceId=${src[0].id}`)).body.totals.created).toBe(1);
+    expect((await o.get(`/reports/summary?from=${day(1)}&to=${day(-7)}`)).status).toBe(400);
+    expect((await o.get('/reports/summary?unit=year')).status).toBe(400);
+    expect((await o.get('/reports/summary?from=2020-01-01&to=2026-01-01')).status).toBe(400);
+
+    const board = (await o.get(`/reports/agents?from=${day(-7)}&to=${day(1)}`)).body.rows;
+    expect(board.map((r: any) => r.name)).toEqual(['Owner One', 'Sales Agent User']);
+    expect(board[0]).toMatchObject({ created: 3, won: 1, lost: 1, wonValue: 5000, open: 2, tasksCompleted: 2, tasksOnTime: 1, tasksOverdue: 1, notes: 1 });
+    expect(board[0].conversion).toBeCloseTo(0.5);
+    expect(board[1]).toMatchObject({ created: 1, won: 1, lost: 0, wonValue: 2000, open: 0, tasksCompleted: 0 });
+
+    const sources = (await o.get(`/reports/sources?from=${day(-7)}&to=${day(1)}`)).body.rows;
+    expect(sources.find((s: any) => s.name === 'No source')).toMatchObject({ created: 3, won: 2, lost: 1, wonValue: 7000 });
+    expect(sources.find((s: any) => s.id === src[0].id)).toMatchObject({ created: 1, won: 0, open: 1 });
+
+    const fu = (await o.get(`/reports/follow-ups?from=${day(-7)}&to=${day(1)}`)).body;
+    expect(fu.rows[0]).toMatchObject({ name: 'Owner One', due: 3, completed: 2, onTime: 1, overdue: 1, upcoming: 0 });
+    expect(fu.totals.completed).toBe(2);
+    expect(fu.byType).toEqual([{ type: 'FOLLOW_UP', due: 3, completed: 2, onTime: 1, cancelled: 0, overdue: 1, upcoming: 0 }]);
+
+    // Drill-down filters on the lead list match the report's definitions.
+    expect((await o.get(`/leads?status=won&closedFrom=${week.range.fromAt}&closedTo=${week.range.toAt}`)).body.total).toBe(2);
+    expect((await o.get(`/leads?createdFrom=${week.range.fromAt}&createdTo=${week.range.toAt}`)).body.total).toBe(4);
+
+    // CSV export of each report.
+    const csv = (await o.get(`/reports/export?report=agents&from=${day(-7)}&to=${day(1)}`)).text.split('\r\n');
+    expect(csv[0]).toContain('Agent,Leads created,Won,Lost,Won value');
+    expect(csv[1].startsWith('Owner One,3,1,1,5000,2,50%,2,1,1,1')).toBe(true);
+    expect((await o.get(`/reports/export?report=summary&unit=month&from=${day(-60)}&to=${day(1)}`)).text).toContain('Period,Leads created');
+    expect((await o.get('/reports/export?report=nope')).status).toBe(400);
+
+    // A scoped reporter only sees their own figures and cannot ask for someone else's.
+    const role = (await o.post('/roles', { name: 'Scoped reporter', scope: 'OWN', permissions: ['leads.view', 'reports.view'] })).body;
+    const users = (await o.get('/users')).body as any[];
+    const ownerId = users.find((u) => u.role.systemKey === 'owner').id;
+    await o.patch(`/users/${users.find((u) => u.id === agent.userId).membershipId}`, { roleId: role.id });
+    expect((await agent.get(`/reports/summary?from=${day(-7)}&to=${day(1)}`)).body.totals).toMatchObject({ created: 1, won: 1, wonValue: 2000 });
+    expect((await agent.get('/reports/agents')).body.rows.map((r: any) => r.name)).toEqual(['Sales Agent User']);
+    expect((await agent.get(`/reports/summary?ownerId=${ownerId}`)).status).toBe(403);
+    expect((await o.get(`/reports/summary?from=${day(-7)}&to=${day(1)}&ownerId=${agent.userId}`)).body.totals.created).toBe(1);
+
+    const other = await registerOrg('ReportsOther');
+    expect((await other.get(`/reports/summary?from=${day(-60)}&to=${day(1)}`)).body.totals).toMatchObject({ created: 0, won: 0, wonValue: 0 });
+    expect((await other.get('/reports/agents')).body.rows).toHaveLength(1);
+    expect((await other.get(`/reports/summary?sourceId=${src[0].id}`)).status).toBe(400);
+  });
+});
+
 describe('custom lead fields', () => {
   let o: Awaited<ReturnType<typeof registerOrg>>;
   beforeAll(async () => { o = await registerOrg('Fields'); });

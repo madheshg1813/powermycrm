@@ -37,8 +37,8 @@ the browser, **None** = untested. Rows marked (ext) go beyond what TeleCRM docum
 | Razorpay | /integrations | — | Designed | None |
 | Portal integrations (IndiaMART, Justdial, etc.) | /integrations | — | Designed | None |
 | Google Sheets, Google Meet, Shopify, WooCommerce | /integrations | — | Not Started | None |
-| Hour-by-hour, daily, sales, agent reports | /features 3 | — | Not Started | None |
-| Leaderboard | /features 3.3 | Team table on dashboard (leads, won, won value) | Backend In Progress | API |
+| Hour-by-hour, daily, sales, agent reports | /features 3 | Reports page: created/won/lost/won value by hour of day, day, week or month in the organisation timezone; filters by period preset or custom dates, agent and source; drill-down to the lead list; CSV export | Testing | API + Manual |
+| Leaderboard | /features 3.3 | Agent leaderboard: created, won, lost, conversion, won value, open, follow-ups completed and on time, overdue, notes; ranked by won then value. Lead-source and follow-up reports alongside | Testing | API + Manual |
 | Funnel by stage | /whatsapp-crm | Dashboard pipeline chart | Completed | API + Manual |
 | Custom report | /features 3.6 | — | Not Started | None |
 | Mobile app | /call-center-crm | Responsive web layouts written, not verified on a phone | Frontend In Progress | None |

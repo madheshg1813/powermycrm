@@ -99,6 +99,9 @@ const listSchema = z.object({
   archived: z.enum(['true', 'false']).default('false'),
   createdFrom: z.coerce.date().optional(),
   createdTo: z.coerce.date().optional(),
+  // When the lead entered its current won/lost stage; used by report drill-downs.
+  closedFrom: z.coerce.date().optional(),
+  closedTo: z.coerce.date().optional(),
   sort: z.enum(['createdAt', 'updatedAt', 'name', 'score', 'dealValue', 'lastActivityAt']).default('createdAt'),
   dir: z.enum(['asc', 'desc']).default('desc'),
 });
@@ -132,7 +135,7 @@ const serialize = (l: LeadRow) => ({
   lists: l.lists.map((x) => x.list),
 });
 
-const csvCell = (v: unknown) => {
+export const csvCell = (v: unknown) => {
   let s = v === null || v === undefined ? '' : String(v);
   if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`; // neutralise spreadsheet formulas
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
@@ -142,17 +145,24 @@ const csvCell = (v: unknown) => {
 export class LeadsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Record-level visibility inside the organisation, from the caller's role. */
-  async scope(ctx: Ctx): Promise<Prisma.LeadWhereInput> {
-    if (ctx.scope === 'ALL') return {};
+  /** Owners whose leads the caller may see: null for everyone (ALL scope), the team's user ids, or just their own. */
+  async ownerIds(ctx: Ctx): Promise<string[] | null> {
+    if (ctx.scope === 'ALL') return null;
     if (ctx.scope === 'TEAM' && ctx.teamId) {
       const members = await this.prisma.membership.findMany({
         where: { organisationId: ctx.orgId, teamId: ctx.teamId },
         select: { userId: true },
       });
-      return { ownerId: { in: [...new Set([...members.map((m) => m.userId), ctx.userId])] } };
+      return [...new Set([...members.map((m) => m.userId), ctx.userId])];
     }
-    return { ownerId: ctx.userId };
+    return [ctx.userId];
+  }
+
+  /** Record-level visibility inside the organisation, from the caller's role. */
+  async scope(ctx: Ctx): Promise<Prisma.LeadWhereInput> {
+    const ids = await this.ownerIds(ctx);
+    if (!ids) return {};
+    return ids.length === 1 ? { ownerId: ids[0] } : { ownerId: { in: ids } };
   }
 
   private async where(ctx: Ctx, f: z.infer<typeof listSchema>): Promise<Prisma.LeadWhereInput> {
@@ -179,6 +189,7 @@ export class LeadsService {
     if (f.listId) and.push({ lists: { some: { listId: f.listId } } });
     if (f.status) and.push({ stage: { type: f.status.toUpperCase() as 'OPEN' | 'WON' | 'LOST' } });
     if (f.createdFrom || f.createdTo) and.push({ createdAt: { gte: f.createdFrom, lte: f.createdTo } });
+    if (f.closedFrom || f.closedTo) and.push({ stageEnteredAt: { gte: f.closedFrom, lte: f.closedTo }, stage: { type: { in: ['WON', 'LOST'] } } });
     return { organisationId: ctx.orgId, archivedAt: f.archived === 'true' ? { not: null } : null, AND: and };
   }
 

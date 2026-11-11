@@ -1,5 +1,5 @@
 'use client';
-import { ArrowUpRight, CalendarCheck, Sparkles, UserPlus } from 'lucide-react';
+import { ArrowUpRight, BarChart3, CalendarCheck, Sparkles, UserPlus } from 'lucide-react';
 import Link from 'next/link';
 import { useState } from 'react';
 import { TaskForm } from '@/components/forms';
@@ -87,6 +87,7 @@ export default function DashboardPage() {
         subtitle={`${me.organisation.name} · ${new Date().toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}`}
         actions={
           <>
+            {canReports && <Link href="/reports" className="btn-ghost"><BarChart3 className="h-4 w-4" />Reports</Link>}
             {can('leads.view') && <Link href="/leads" className="btn-ghost"><UserPlus className="h-4 w-4" />View leads</Link>}
             <button className="btn-primary" onClick={() => setTaskForm(true)}><CalendarCheck className="h-4 w-4" />Schedule follow-up</button>
           </>
