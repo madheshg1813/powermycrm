@@ -1,0 +1,16 @@
+{
+  "name": "powermycrm",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:api": "npm run dev -w @powermycrm/api",
+    "dev:web": "npm run dev -w @powermycrm/web",
+    "build": "npm run build -w @powermycrm/api && npm run build -w @powermycrm/web",
+    "db:migrate": "npm run db:migrate -w @powermycrm/api",
+    "test": "npm run test -w @powermycrm/api",
+    "typecheck": "npm run typecheck -w @powermycrm/api && npm run typecheck -w @powermycrm/web"
+  }
+}

@@ -1,0 +1,55 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html { -webkit-text-size-adjust: 100%; }
+  body { @apply bg-cream font-sans text-sm text-ink antialiased; }
+  h1, h2, h3 { @apply font-display tracking-tight; }
+  :focus-visible { @apply outline-none ring-2 ring-ink/25 ring-offset-1; }
+  input[type='checkbox'] { @apply h-4 w-4 cursor-pointer rounded border-ink/30 accent-ink; }
+}
+
+@layer components {
+  .btn { @apply inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-full px-4 py-2 text-sm font-semibold transition disabled:pointer-events-none disabled:opacity-45; }
+  .btn-primary { @apply btn bg-brand text-white shadow-sm hover:bg-brand-hover; }
+  .btn-ghost { @apply btn border border-ink/15 bg-white text-ink hover:border-ink/30 hover:shadow-soft; }
+  .btn-ink { @apply btn bg-ink text-white hover:bg-ink-soft; }
+  .btn-on-ink { @apply btn border border-white/30 text-white hover:border-white/60; }
+  .btn-danger { @apply btn bg-danger text-white hover:bg-danger/90; }
+  .btn-sm { @apply px-3 py-1.5 text-[13px]; }
+  .btn-icon { @apply inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-ink-muted transition hover:bg-ink/5 hover:text-ink disabled:opacity-40; }
+
+  .card { @apply rounded-2xl border border-ink/10 bg-white; }
+  .card-pad { @apply p-5; }
+  .card-title { @apply font-display text-[17px] font-bold tracking-tight; }
+
+  .input { @apply w-full rounded-xl border border-ink/15 bg-white px-3 py-2 text-sm text-ink transition placeholder:text-ink-faint focus:border-ink focus:outline-none focus:ring-2 focus:ring-ink/10 disabled:bg-cream disabled:text-ink-muted; }
+  .input-error { @apply border-danger focus:border-danger focus:ring-danger/15; }
+  select.input { @apply appearance-none bg-[length:16px] bg-[right_0.6rem_center] bg-no-repeat pr-8; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2378716C' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); }
+  .label { @apply mb-1 block text-[13px] font-medium text-ink-soft; }
+
+  .pill { @apply inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium; }
+  .pill-green { @apply pill bg-green-soft text-green; }
+  .pill-ink { @apply pill bg-ink text-white; }
+  .pill-muted { @apply pill bg-ink/5 text-ink-soft; }
+  .pill-amber { @apply pill bg-amber-soft text-amber; }
+  .pill-danger { @apply pill bg-danger-soft text-danger; }
+  .pill-brand { @apply pill bg-brand-soft text-brand-hover; }
+
+  .overline { @apply text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-muted; }
+
+  .table { @apply w-full border-collapse text-left text-[13.5px]; }
+  .table th { @apply whitespace-nowrap border-b border-ink/10 px-3 py-2.5 text-xs font-semibold text-ink-muted; }
+  .table td { @apply border-b border-ink/5 px-3 py-2.5 align-middle; }
+  .table tbody tr:last-child td { @apply border-b-0; }
+  .table tbody tr { @apply transition hover:bg-cream/60; }
+
+  .tab { @apply -mb-px inline-flex items-center gap-1.5 whitespace-nowrap border-b-2 border-transparent px-1 pb-2.5 text-sm font-medium text-ink-muted transition hover:text-ink; }
+  .tab-active { @apply border-ink text-ink; }
+  .tabs { scrollbar-width: none; }
+  .tabs::-webkit-scrollbar { display: none; }
+
+  .menu { @apply absolute z-40 min-w-[200px] rounded-2xl border border-ink/10 bg-white p-1.5 shadow-pop; }
+  .menu-item { @apply flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-ink transition hover:bg-cream disabled:opacity-40; }
+}

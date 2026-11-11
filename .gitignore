@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.next/
+.env
+.env.test
+.env.local
+.pgpass.dev
+*.log
+coverage/
+uploads/
+.DS_Store
+*.tsbuildinfo

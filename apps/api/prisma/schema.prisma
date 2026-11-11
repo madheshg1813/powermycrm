@@ -1,0 +1,466 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OrgStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum MemberStatus {
+  ACTIVE
+  DEACTIVATED
+}
+
+enum RecordScope {
+  OWN
+  TEAM
+  ALL
+}
+
+enum StageType {
+  OPEN
+  WON
+  LOST
+}
+
+enum TaskType {
+  FOLLOW_UP
+  CALLBACK
+  MEETING
+  DEMO
+  SITE_VISIT
+  TASK
+}
+
+enum TaskStatus {
+  OPEN
+  DONE
+  CANCELLED
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum AuthTokenType {
+  VERIFY_EMAIL
+  RESET_PASSWORD
+}
+
+model Organisation {
+  id         String    @id @default(cuid())
+  name       String
+  slug       String    @unique
+  logoUrl    String?
+  timezone   String    @default("Asia/Kolkata")
+  currency   String    @default("INR")
+  dateFormat String    @default("DD MMM YYYY")
+  status     OrgStatus @default(ACTIVE)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  memberships   Membership[]
+  roles         Role[]
+  teams         Team[]
+  invitations   Invitation[]
+  pipelines     Pipeline[]
+  stages        Stage[]
+  sources       LeadSource[]
+  labels        Label[]
+  leads         Lead[]
+  activities    LeadActivity[]
+  tasks         Task[]
+  notifications Notification[]
+  auditLogs     AuditLog[]
+  sessions      Session[]
+  customFields  CustomField[]
+  savedFilters  SavedFilter[]
+  assignRules   AssignmentRule[]
+}
+
+enum FieldType {
+  TEXT
+  LONG_TEXT
+  NUMBER
+  DATE
+  DROPDOWN
+  MULTI_SELECT
+  CHECKBOX
+  URL
+  EMAIL
+  PHONE
+}
+
+/// Admin-defined lead field. Values live in Lead.customFields under `key`.
+model CustomField {
+  id             String    @id @default(cuid())
+  organisationId String
+  key            String
+  label          String
+  type           FieldType
+  options        String[]
+  required       Boolean   @default(false)
+  position       Int       @default(0)
+  createdAt      DateTime  @default(now())
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+
+  @@unique([organisationId, key])
+}
+
+/// A named set of lead-list filters. Private to its creator unless shared.
+model SavedFilter {
+  id             String   @id @default(cuid())
+  organisationId String
+  userId         String
+  name           String
+  filters        Json
+  shared         Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+
+  @@index([organisationId, userId])
+}
+
+/// Round-robin distribution. A rule with a sourceId only applies to that source; without one it applies to all.
+model AssignmentRule {
+  id             String   @id @default(cuid())
+  organisationId String
+  name           String
+  sourceId       String?
+  userIds        String[]
+  cursor         Int      @default(0)
+  active         Boolean  @default(true)
+  position       Int      @default(0)
+  createdAt      DateTime @default(now())
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+
+  @@index([organisationId, active, position])
+}
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  passwordHash    String
+  name            String
+  phone           String?
+  emailVerifiedAt DateTime?
+  isSuperAdmin    Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  memberships   Membership[]
+  sessions      Session[]
+  authTokens    AuthToken[]
+  ownedLeads    Lead[]         @relation("LeadOwner")
+  createdLeads  Lead[]         @relation("LeadCreator")
+  activities    LeadActivity[]
+  assignedTasks Task[]         @relation("TaskAssignee")
+  createdTasks  Task[]         @relation("TaskCreator")
+  notifications Notification[]
+}
+
+model Membership {
+  id             String       @id @default(cuid())
+  organisationId String
+  userId         String
+  roleId         String
+  teamId         String?
+  status         MemberStatus @default(ACTIVE)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role         Role         @relation(fields: [roleId], references: [id])
+  team         Team?        @relation(fields: [teamId], references: [id], onDelete: SetNull)
+
+  @@unique([organisationId, userId])
+  @@index([userId])
+  @@index([organisationId, teamId])
+}
+
+model Role {
+  id             String      @id @default(cuid())
+  organisationId String
+  name           String
+  systemKey      String?
+  scope          RecordScope @default(OWN)
+  permissions    String[]
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  memberships  Membership[]
+  invitations  Invitation[]
+
+  @@unique([organisationId, name])
+}
+
+model Team {
+  id             String   @id @default(cuid())
+  organisationId String
+  name           String
+  createdAt      DateTime @default(now())
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  members      Membership[]
+
+  @@unique([organisationId, name])
+}
+
+model Invitation {
+  id             String    @id @default(cuid())
+  organisationId String
+  email          String
+  roleId         String
+  tokenHash      String    @unique
+  invitedById    String
+  expiresAt      DateTime
+  acceptedAt     DateTime?
+  createdAt      DateTime  @default(now())
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  role         Role         @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@index([organisationId])
+}
+
+model Session {
+  id              String    @id @default(cuid())
+  userId          String
+  organisationId  String
+  refreshHash     String    @unique
+  prevRefreshHash String?   @unique
+  userAgent       String?
+  ip              String?
+  createdAt       DateTime  @default(now())
+  lastUsedAt      DateTime  @default(now())
+  expiresAt       DateTime
+  revokedAt       DateTime?
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model LoginEvent {
+  id        String   @id @default(cuid())
+  userId    String?
+  email     String
+  success   Boolean
+  ip        String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([email, createdAt])
+}
+
+model AuthToken {
+  id        String        @id @default(cuid())
+  userId    String
+  type      AuthTokenType
+  tokenHash String        @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime      @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model AuditLog {
+  id             String   @id @default(cuid())
+  organisationId String
+  actorId        String?
+  action         String
+  entity         String
+  entityId       String?
+  meta           Json?
+  ip             String?
+  createdAt      DateTime @default(now())
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+
+  @@index([organisationId, createdAt])
+}
+
+model Pipeline {
+  id             String   @id @default(cuid())
+  organisationId String
+  name           String
+  isDefault      Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  stages       Stage[]
+  leads        Lead[]
+
+  @@unique([organisationId, name])
+}
+
+model Stage {
+  id             String    @id @default(cuid())
+  organisationId String
+  pipelineId     String
+  name           String
+  color          String    @default("#78716C")
+  position       Int
+  type           StageType @default(OPEN)
+  createdAt      DateTime  @default(now())
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  pipeline     Pipeline     @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  leads        Lead[]
+
+  @@unique([pipelineId, name])
+  @@index([organisationId])
+}
+
+model LeadSource {
+  id             String   @id @default(cuid())
+  organisationId String
+  name           String
+  createdAt      DateTime @default(now())
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  leads        Lead[]
+
+  @@unique([organisationId, name])
+}
+
+model Label {
+  id             String   @id @default(cuid())
+  organisationId String
+  name           String
+  color          String   @default("#EA5A2A")
+  createdAt      DateTime @default(now())
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  leads        LeadLabel[]
+
+  @@unique([organisationId, name])
+}
+
+model Lead {
+  id              String    @id @default(cuid())
+  organisationId  String
+  name            String
+  phone           String?
+  phoneNormalized String?
+  email           String?
+  company         String?
+  city            String?
+  sourceId        String?
+  ownerId         String?
+  pipelineId      String
+  stageId         String
+  score           Int       @default(0)
+  dealValue       Decimal?  @db.Decimal(14, 2)
+  expectedCloseAt DateTime?
+  lostReason      String?
+  customFields    Json      @default("{}")
+  createdById     String?
+  stageEnteredAt  DateTime  @default(now())
+  lastActivityAt  DateTime  @default(now())
+  archivedAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  organisation Organisation   @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  source       LeadSource?    @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  owner        User?          @relation("LeadOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  createdBy    User?          @relation("LeadCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  pipeline     Pipeline       @relation(fields: [pipelineId], references: [id])
+  stage        Stage          @relation(fields: [stageId], references: [id])
+  labels       LeadLabel[]
+  activities   LeadActivity[]
+  tasks        Task[]
+
+  @@index([organisationId, archivedAt, createdAt])
+  @@index([organisationId, ownerId])
+  @@index([organisationId, stageId])
+  @@index([organisationId, sourceId])
+  @@index([organisationId, phoneNormalized])
+  @@index([organisationId, email])
+}
+
+model LeadLabel {
+  leadId  String
+  labelId String
+
+  lead  Lead  @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  label Label @relation(fields: [labelId], references: [id], onDelete: Cascade)
+
+  @@id([leadId, labelId])
+  @@index([labelId])
+}
+
+model LeadActivity {
+  id             String   @id @default(cuid())
+  organisationId String
+  leadId         String
+  actorId        String?
+  type           String
+  data           Json?
+  createdAt      DateTime @default(now())
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  lead         Lead         @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  actor        User?        @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([leadId, createdAt])
+  @@index([organisationId, createdAt])
+}
+
+model Task {
+  id             String       @id @default(cuid())
+  organisationId String
+  leadId         String?
+  type           TaskType     @default(FOLLOW_UP)
+  title          String
+  notes          String?
+  dueAt          DateTime
+  priority       TaskPriority @default(MEDIUM)
+  status         TaskStatus   @default(OPEN)
+  assigneeId     String
+  createdById    String?
+  completedAt    DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  lead         Lead?        @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  assignee     User         @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: Cascade)
+  createdBy    User?        @relation("TaskCreator", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([organisationId, assigneeId, status, dueAt])
+  @@index([leadId])
+}
+
+model Notification {
+  id             String    @id @default(cuid())
+  organisationId String
+  userId         String
+  type           String
+  title          String
+  body           String?
+  link           String?
+  readAt         DateTime?
+  createdAt      DateTime  @default(now())
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([organisationId, userId, readAt, createdAt])
+}
