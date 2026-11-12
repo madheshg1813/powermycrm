@@ -87,6 +87,10 @@ model Organisation {
   leadLists     LeadList[]
   opportunities Opportunity[]
   payments      Payment[]
+  outboxEvents  OutboxEvent[]
+  webhooks      WebhookEndpoint[]
+  integrations  Integration[]
+  apiKeys       ApiKey[]
 }
 
 enum FieldType {
@@ -525,6 +529,153 @@ model Payment {
   @@index([organisationId, status, dueAt])
   @@index([organisationId, paidAt])
   @@index([leadId])
+}
+
+/// Domain events written in the same transaction as the change they describe, then fanned out by the worker.
+model OutboxEvent {
+  id             String    @id @default(cuid())
+  organisationId String
+  type           String
+  payload        Json
+  createdAt      DateTime  @default(now())
+  dispatchedAt   DateTime?
+  attempts       Int       @default(0)
+  lastError      String?
+
+  organisation Organisation      @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  deliveries   WebhookDelivery[]
+
+  @@index([dispatchedAt, createdAt])
+  @@index([organisationId, createdAt])
+}
+
+enum DeliveryStatus {
+  PENDING
+  DELIVERED
+  FAILED
+}
+
+/// A customer-owned URL that receives signed JSON for the event types it subscribes to.
+model WebhookEndpoint {
+  id             String    @id @default(cuid())
+  organisationId String
+  name           String
+  url            String
+  secret         String
+  events         String[]
+  active         Boolean   @default(true)
+  createdById    String?
+  lastDeliveryAt DateTime?
+  lastStatus     Int?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organisation Organisation      @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  deliveries   WebhookDelivery[]
+
+  @@index([organisationId])
+}
+
+model WebhookDelivery {
+  id             String         @id @default(cuid())
+  organisationId String
+  endpointId     String
+  eventId        String
+  eventType      String
+  status         DeliveryStatus @default(PENDING)
+  attempts       Int            @default(0)
+  responseCode   Int?
+  error          String?
+  createdAt      DateTime       @default(now())
+  deliveredAt    DateTime?
+
+  endpoint WebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+  event    OutboxEvent     @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@index([endpointId, createdAt])
+  @@index([organisationId, status])
+}
+
+enum IntegrationStatus {
+  NOT_CONNECTED
+  AWAITING_CREDENTIALS
+  CONNECTED
+  ERROR
+  DISABLED
+}
+
+enum EventDirection {
+  IN
+  OUT
+}
+
+enum IntegrationEventStatus {
+  PENDING
+  PROCESSED
+  SKIPPED
+  FAILED
+}
+
+/// One connected provider for an organisation. Credentials are encrypted at rest (AES-256-GCM).
+model Integration {
+  id             String            @id @default(cuid())
+  organisationId String
+  provider       String
+  name           String
+  status         IntegrationStatus @default(NOT_CONNECTED)
+  credentials    String?
+  settings       Json              @default("{}")
+  fieldMapping   Json              @default("{}")
+  lastError      String?
+  lastEventAt    DateTime?
+  createdById    String?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  organisation Organisation       @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  events       IntegrationEvent[]
+
+  @@index([organisationId, provider])
+}
+
+/// Everything received from or sent to a provider, with its outcome. Inbound events are processed by the worker.
+model IntegrationEvent {
+  id             String                 @id @default(cuid())
+  organisationId String
+  integrationId  String
+  direction      EventDirection         @default(IN)
+  externalId     String?
+  type           String
+  payload        Json
+  status         IntegrationEventStatus @default(PENDING)
+  attempts       Int                    @default(0)
+  error          String?
+  leadId         String?
+  createdAt      DateTime               @default(now())
+  processedAt    DateTime?
+
+  integration Integration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+
+  @@unique([integrationId, externalId])
+  @@index([integrationId, createdAt])
+  @@index([organisationId, status])
+}
+
+/// Bearer keys for the public lead-capture API. Only the SHA-256 hash is stored.
+model ApiKey {
+  id             String    @id @default(cuid())
+  organisationId String
+  name           String
+  prefix         String
+  keyHash        String    @unique
+  createdById    String?
+  lastUsedAt     DateTime?
+  revokedAt      DateTime?
+  createdAt      DateTime  @default(now())
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+
+  @@index([organisationId])
 }
 
 model LeadActivity {

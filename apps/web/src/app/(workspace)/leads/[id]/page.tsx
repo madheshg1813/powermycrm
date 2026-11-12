@@ -22,7 +22,8 @@ const FIELD_LABELS: Record<string, string> = { name: 'Name', phone: 'Phone', ema
 function describe(a: Activity): { icon: React.ComponentType<{ className?: string }>; text: React.ReactNode; body?: string } {
   const d = a.data ?? {};
   switch (a.type) {
-    case 'created': return { icon: Plus, text: d.via === 'import' ? 'Lead imported' : 'Lead created' };
+    case 'created': return { icon: Plus, text: d.via === 'import' ? 'Lead imported' : d.via === 'website_form' ? 'Lead received from the website form' : d.via === 'api' ? 'Lead received through the API' : 'Lead created' };
+    case 'enquiry': return { icon: Sparkles, text: <>Enquired again{d.via === 'website_form' ? ' via the website form' : d.via === 'api' ? ' through the API' : ''}{d.name ? <> as <strong>{d.name}</strong></> : ''}</> };
     case 'note': return { icon: MessageSquareText, text: 'Added a note', body: d.body };
     case 'stage_changed': return { icon: ArrowRightLeft, text: <>Moved {d.from ? <>from <strong>{d.from}</strong> </> : ''}to <strong>{d.to}</strong></> };
     case 'assigned': return { icon: UserRound, text: d.to ? <>Assigned to <strong>{d.to}</strong></> : 'Unassigned' };

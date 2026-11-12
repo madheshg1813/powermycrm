@@ -40,15 +40,16 @@ provider. There is no code path that sets it otherwise.
    signature verified and a job enqueued. The HTTP response is immediate.
 2. The worker normalises events, deduplicates on `(integrationId, externalId)`, applies field
    mapping and calls domain services (create lead, log call, update payment).
-3. Failures are retried with exponential backoff (1m, 5m, 30m, 2h, 12h), then parked as failed and
-   shown in the integration's event log with a manual retry.
+3. Failures are retried with exponential backoff (pg-boss: about 1m, 2m, 4m, 8m, 16m with jitter,
+   capped at 12h), then parked as failed and shown in the integration's event log with a manual retry.
+   Validation failures (a submission with no name, phone or email) are parked at once without retrying.
 4. Outbound calls go through a per-provider rate limiter and honour `Retry-After`.
 
 ## Providers and what each needs
 
 | Provider | Auth | Needs from the customer | Status |
 |---|---|---|---|
-| Website forms / custom API / webhooks | API key | Nothing external | Built in-house |
+| Website forms / custom API / webhooks | Form token / API key / endpoint secret | Nothing external | **Built** (session 3): `website_form` provider, `POST /public/leads`, outbound webhooks |
 | Meta lead ads, Instagram | OAuth | Meta app (reviewed for `leads_retrieval`, `pages_manage_metadata`) | Awaiting platform credentials |
 | Meta Conversions API | Token | Pixel id, access token | Awaiting credentials |
 | WhatsApp Cloud API | Token | WABA id, phone number id, permanent token, app secret | Awaiting credentials |

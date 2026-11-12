@@ -31,7 +31,7 @@ function Stat({ label, value, sub, active, onClick }: { label: string; value: st
   );
 }
 
-export function PaymentStatusPill({ p }: { p: Payment }) {
+function PaymentStatusPill({ p }: { p: Payment }) {
   const overdue = p.status === 'PENDING' && p.dueAt && new Date(p.dueAt) < new Date();
   const cls = p.status === 'PAID' ? 'pill-green' : p.status === 'REFUNDED' ? 'pill-muted' : p.status === 'FAILED' ? 'pill-danger' : overdue ? 'pill-amber' : 'pill-muted';
   return <span className={cls}>{overdue ? 'Overdue' : PAYMENT_STATUS[p.status]}</span>;

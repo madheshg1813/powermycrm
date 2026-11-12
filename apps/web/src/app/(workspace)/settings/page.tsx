@@ -2,13 +2,14 @@
 import { ArrowDown, ArrowUp, Check, Pencil, Plus, Trash2 } from 'lucide-react';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
+import { Integrations } from '@/components/integrations';
 import { ColorDot, ErrorState, Field, PageHeader, Skeleton, Spinner, Tabs, useUi } from '@/components/ui';
 import { api, useApi } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { fmtDateTime, relTime } from '@/lib/format';
 import { CustomField, FIELD_TYPES, Stage, useRefs } from '@/lib/refs';
 
-type Tab = 'account' | 'organisation' | 'pipeline' | 'sources' | 'labels' | 'fields' | 'lists' | 'rules';
+type Tab = 'account' | 'organisation' | 'pipeline' | 'sources' | 'labels' | 'fields' | 'lists' | 'rules' | 'integrations';
 const COLORS = ['#2563EB', '#7C3AED', '#0E7490', '#168A4C', '#B54708', '#EA5A2A', '#B42318', '#78716C'];
 
 export default function SettingsPage() {
@@ -19,8 +20,12 @@ export default function SettingsPage() {
     ...(can('settings.manage') ? [{ value: 'organisation' as Tab, label: 'Organisation' }] : []),
     ...(can('pipeline.manage') ? [{ value: 'pipeline' as Tab, label: 'Pipeline stages' }, { value: 'sources' as Tab, label: 'Lead sources' }, { value: 'labels' as Tab, label: 'Labels' }, { value: 'fields' as Tab, label: 'Lead fields' }] : []),
     ...(can('leads.edit') ? [{ value: 'lists' as Tab, label: 'Lead lists' }] : []),
-    ...(can('settings.manage') ? [{ value: 'rules' as Tab, label: 'Assignment rules' }] : []),
+    ...(can('settings.manage') ? [{ value: 'rules' as Tab, label: 'Assignment rules' }, { value: 'integrations' as Tab, label: 'Integrations' }] : []),
   ];
+  useEffect(() => {
+    const t = new URLSearchParams(window.location.search).get('tab') as Tab | null;
+    if (t && tabs.some((x) => x.value === t)) setTab(t);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <div className="mx-auto max-w-[860px]">
       <PageHeader title="Settings" />
@@ -34,6 +39,7 @@ export default function SettingsPage() {
         {tab === 'fields' && <LeadFields />}
         {tab === 'lists' && <LeadLists />}
         {tab === 'rules' && <AssignmentRules />}
+        {tab === 'integrations' && <Integrations />}
       </div>
     </div>
   );

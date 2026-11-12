@@ -4,8 +4,9 @@ Last updated: 2026-11-12 (session 3, in progress)
 
 ## Where it stands
 
-Phases 0, 1 and 5 are built and tested. Phases 2, 3 and 4 are partly built: the core of each works
-end to end, and the remaining items are listed below. Phases 6 to 18 have not been started.
+Phases 0, 1, 5 and 6 are built and tested, and phase 7 has its framework and two working providers.
+Phases 2, 3, 4 and 11 are partly built: the core of each works end to end, and the remaining items
+are listed below. Phases 8 to 10 and 12 to 18 have not been started.
 PowerMyCRM is **not** at feature parity with TeleCRM and is not production-ready yet.
 
 | Phase | Scope | Status |
@@ -16,8 +17,10 @@ PowerMyCRM is **not** at feature parity with TeleCRM and is not production-ready
 | 3 | Pipelines and Kanban | Core completed; deals (opportunities) with forecast completed (session 3). SLA timers, required fields per stage not started |
 | 4 | Tasks and follow-ups | Core completed; calendar view, recurring tasks, reminders and push not started |
 | 5 | Dashboard and reports | Dashboard and reports module completed (session 3). No custom report builder, Excel export or scheduled reports |
+| 6 | Job queue and outbox | Completed: pg-boss on PostgreSQL in-process, outbox events, signed outbound webhooks with retries and a delivery log |
+| 7 | Integration framework | Framework completed (Integration, IntegrationEvent, encrypted credentials, inbound worker, event log with retry). Providers: website forms and the API-key lead-capture API. Every third-party provider is awaiting credentials |
 | 11 | Payments | Manual payment records (expected, received, failed, refunded), totals, Payments page. No payment gateway yet |
-| 6–10, 12–18 | Queue, integrations, calling, WhatsApp, SMS/email, automation, AI, super admin, mobile app, production deployment | Not started |
+| 8–10, 12–18 | Calling, WhatsApp, SMS/email, automation, AI, super admin, mobile app, production deployment | Not started |
 
 ## What works today
 
@@ -30,6 +33,10 @@ PowerMyCRM is **not** at feature parity with TeleCRM and is not production-ready
 - Pipelines: multiple pipelines, custom stages with colours and order, drag-and-drop Kanban.
 - Follow-ups: callbacks, meetings, demos, site visits, tasks; today / overdue / upcoming / done; reschedule, complete, delete.
 - Reports: date-range summary of leads created, won, lost and won value by hour of day, day, week or month (in the organisation's timezone); agent leaderboard; lead-source report; follow-up report by agent and by type; CSV export of each; every figure links through to the filtered leads list. All figures are computed from the database at request time within the user's record scope.
+- Background jobs: pg-boss queue on PostgreSQL running inside the API process (`QUEUE_DISABLED=true` turns it off), with retries and exponential backoff. Domain events (lead created, stage changed, assigned, archived; deal won/lost; payment received/refunded) are written to an outbox in the same transaction and dispatched by the worker.
+- Webhooks: admins register endpoints per event type, receive HMAC-SHA256 signed JSON, see every delivery attempt with its HTTP status, retry by hand, send test events, pause and rotate secrets.
+- Website forms: each form integration has an endpoint and token; submissions (JSON or form-encoded) are stored as integration events, processed by the worker into leads with field mapping, source, de-duplication strategy and rule-based assignment; honeypot and duplicate-request protection; event log with retry; optional thank-you redirect.
+- Public lead-capture API: bearer API keys (shown once, hashed at rest, revocable) for `POST /api/v1/public/leads`.
 - Dashboard with live figures; global search; in-app notifications; audit log (API).
 - Settings: profile, password, devices, organisation, stages, pipelines, sources, labels.
 
@@ -43,17 +50,18 @@ npm run dev:web           # http://localhost:3000
 npm test                  # API end-to-end tests against the *_test database
 ```
 
-Local configuration is in `apps/api/.env` (git-ignored). A demo workspace login is recorded in
-`.env.local` (git-ignored).
+Local configuration is in `apps/api/.env` (git-ignored); `apps/api/.env.example` lists every variable,
+including `CREDENTIALS_KEY` (32 random bytes, base64) which encrypts integration secrets. A demo
+workspace login is recorded in `.env.local` (git-ignored).
 
 ## Next tasks, in order
 
-1. Done in session 3: static lead lists; reports; custom-field filters, sort and columns; deals with forecast; payments.
-2. Job queue (pg-boss), outbox, webhook endpoints, integration framework with website-form and API-key lead capture.
+1. Done in session 3: static lead lists; reports; custom-field filters, sort and columns; deals with forecast; payments; job queue, outbox, webhooks, website forms and the public API.
+2. Email provider so invitations, password resets and verification are actually sent (now possible through the queue).
 3. Dynamic lists, conditional assignment rules, lead attachments (needs `StorageService`).
 4. Won/lost reasons, forecasting, stage SLA and ageing.
 5. Calendar view, recurring tasks, reminder scheduler (needs the job queue).
-6. Email provider so invitations, password resets and verification are actually sent.
+6. Third-party lead sources (Meta lead ads, IndiaMART, Google forms) once platform credentials are supplied; Razorpay payment links.
 
 ## Known bugs
 
@@ -62,6 +70,8 @@ None open. See `KNOWN_LIMITATIONS.md` for gaps.
 ## Technical debt
 
 - Tenant isolation is enforced in the service layer and covered by tests; PostgreSQL row-level security is not yet enabled.
+- The worker runs inside the API process. A separate `npm run worker` entry point is not yet provided; set `QUEUE_DISABLED=true` on extra API instances until it is.
+- pg-boss is an ES module and is loaded through Node's native `require` (Node 22.12 or later) so the Jest suite can run it.
 - No web end-to-end (browser) test suite yet. Screens were checked by hand.
 - `docs/SYSTEM_ARCHITECTURE.md` mentions `packages/shared`; permission keys currently live in `apps/api/src/common/permissions.ts` and are served to the web app by the API.
 - Dates are formatted in the browser's locale; the organisation's date-format setting is stored but not applied yet.

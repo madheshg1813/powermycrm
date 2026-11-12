@@ -5,7 +5,7 @@
 | Area | Effect today | Needs |
 |---|---|---|
 | Email delivery | Invitation links are shown to the admin to share. Password-reset links are written to the API server log outside production. Email verification is not sent. | SMTP or transactional email provider credentials |
-| Calling, WhatsApp, SMS, payments, lead-source integrations | Not built. The lead page "Call" and "Email" buttons only open the device's phone or mail app and are not logged. | See `INTEGRATION_ARCHITECTURE.md` |
+| Third-party lead sources, calling, WhatsApp, SMS, payment gateways | The integration framework, queue and event log are built; website forms and the API-key capture work end to end. Every provider that needs third-party credentials (Meta, IndiaMART, Justdial, Razorpay, telephony, WhatsApp Cloud API) is not connectable yet and is not shown as such. The lead page "Call" and "Email" buttons only open the device's phone or mail app and are not logged. | Platform credentials from the product owner; see `INTEGRATION_ARCHITECTURE.md` |
 
 ## Functional gaps in built modules
 
@@ -17,6 +17,8 @@
 - Assignment rules are round-robin only (per source or all sources). They run when the owner is set to "Auto-assign by rule"; nothing creates leads automatically yet because integrations are not built.
 - Payments are recorded by hand. Payment links, online collection and reconciliation need a gateway integration (Razorpay is designed, not connected). Reports and the dashboard still use the lead's own deal value and won/lost stage, not deals or payments.
 - Reports export to CSV only (no Excel), cover at most one year per query, and have no custom report builder or scheduled delivery. "Won" and "lost" are counted on the day a lead entered its current closing stage, so a lead moved from Won back to an open stage no longer counts as won.
+- Webhook deliveries retry five times with exponential backoff (about 1 min, 2 min, 4 min, 8 min, 16 min with jitter, capped at 12 h), then park as failed for manual retry. Receivers must answer within 10 seconds. Outbox events older than 30 seconds that were not dispatched are swept once a minute.
+- Website form endpoints accept cross-origin browser posts from any site (they are meant to be public); abuse protection is the per-IP rate limit, the honeypot field and the token.
 - Notifications are in-app only and refresh every 60 seconds (no WebSocket or push yet).
 - No multi-factor authentication, email verification or password-policy settings.
 - The audit log has an API endpoint but no screen.

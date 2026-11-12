@@ -1,6 +1,8 @@
 import 'reflect-metadata';
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { createHmac } from 'crypto';
+import * as http from 'http';
 import request from 'supertest';
 import { AppModule, configureApp } from '../src/app.module';
 import { PrismaService } from '../src/common/core';
@@ -975,6 +977,212 @@ describe('deals and payments', () => {
     expect((await other.post('/payments', { leadId: lead.id, amount: 1 })).status).toBe(400);
     expect((await other.patch(`/payments/${p1.body.id}`, { status: 'REFUNDED' })).status).toBe(404);
     expect((await other.del(`/opportunities/${d4.id}`)).status).toBe(404);
+  });
+});
+
+/** Polls until the condition returns a value, for jobs that run on the queue. */
+async function until<T>(fn: () => Promise<T | null | undefined | false>, ms = 15_000): Promise<T> {
+  const start = Date.now();
+  for (;;) {
+    const v = await fn();
+    if (v) return v;
+    if (Date.now() - start > ms) throw new Error('Timed out waiting for background work');
+    await new Promise((r) => setTimeout(r, 250));
+  }
+}
+
+/** A throwaway HTTP server that records what webhooks it receives and answers with the configured status. */
+function receiver() {
+  const hits: { headers: http.IncomingHttpHeaders; body: string }[] = [];
+  let status = 200;
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => { hits.push({ headers: req.headers, body }); res.statusCode = status; res.end('ok'); });
+  });
+  return {
+    hits,
+    setStatus: (s: number) => { status = s; },
+    start: () => new Promise<string>((resolve) => server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${(server.address() as any).port}/hook`))),
+    stop: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  };
+}
+
+describe('webhooks and outbox', () => {
+  const rx = receiver();
+  let url: string;
+  beforeAll(async () => { url = await rx.start(); });
+  afterAll(() => rx.stop());
+
+  it('delivers signed events for subscribed types, retries failures and logs every attempt', async () => {
+    const o = await registerOrg('Hooks');
+    expect((await o.get('/webhook-events')).body).toContain('lead.created');
+    expect((await o.post('/webhook-endpoints', { name: 'Bad', url: 'ftp://x', events: ['lead.created'] })).status).toBe(400);
+    expect((await o.post('/webhook-endpoints', { name: 'Bad', url, events: ['lead.exploded'] })).status).toBe(400);
+    const ep = await o.post('/webhook-endpoints', { name: 'Zapier', url, events: ['lead.created', 'lead.stage_changed'] });
+    expect(ep.status).toBe(201);
+    expect(ep.body.secret).toMatch(/^whsec_/);
+    const secret = ep.body.secret as string;
+    expect((await o.get('/webhook-endpoints')).body[0].secret).toBeUndefined();
+
+    const lead = (await o.post('/leads', { name: 'Hooked Lead', phone: '9777700001' })).body;
+    const first = await until(async () => rx.hits[0]);
+    const payload = JSON.parse(first.body);
+    expect(payload.type).toBe('lead.created');
+    expect(payload.data.lead.id).toBe(lead.id);
+    expect(first.headers['x-powermycrm-event']).toBe('lead.created');
+    const [t, v1] = (first.headers['x-powermycrm-signature'] as string).split(',').map((p) => p.split('=')[1]);
+    expect(createHmac('sha256', secret).update(`${t}.${first.body}`).digest('hex')).toBe(v1);
+
+    // Assignment is not subscribed; a stage change is.
+    const agent = await addMember(o, 'Sales Agent');
+    await o.patch(`/leads/${lead.id}`, { ownerId: agent.userId });
+    const stages = (await o.get('/pipelines')).body[0].stages;
+    await o.patch(`/leads/${lead.id}`, { stageId: stages[1].id });
+    const second = await until(async () => rx.hits[1]);
+    expect(JSON.parse(second.body).type).toBe('lead.stage_changed');
+    expect(JSON.parse(second.body).data.to.name).toBe('Contacted');
+    await new Promise((r) => setTimeout(r, 1500));
+    expect(rx.hits).toHaveLength(2);
+    const log = (await o.get(`/webhook-endpoints/${ep.body.id}/deliveries`)).body;
+    expect(log.total).toBe(2);
+    expect(log.items.every((d: any) => d.status === 'DELIVERED' && d.responseCode === 200 && d.attempts === 1)).toBe(true);
+    expect((await o.get('/webhook-endpoints')).body[0]).toMatchObject({ lastStatus: 200, deliveries: { delivered: 2, pending: 0, failed: 0 } });
+
+    // A failing receiver: the attempt is logged with its status and the delivery stays pending for retry.
+    rx.setStatus(500);
+    const test = await o.post(`/webhook-endpoints/${ep.body.id}/test`);
+    expect(test.status).toBe(200);
+    const failed = await until(async () => {
+      const d = (await o.get(`/webhook-endpoints/${ep.body.id}/deliveries`)).body.items.find((x: any) => x.id === test.body.deliveryId);
+      return d?.attempts >= 1 ? d : null;
+    });
+    expect(failed).toMatchObject({ eventType: 'webhook.test', status: 'PENDING', responseCode: 500, error: 'HTTP 500' });
+    rx.setStatus(200);
+    expect((await o.post(`/webhook-deliveries/${failed.id}/retry`)).status).toBe(200);
+    const redone = await until(async () => {
+      const d = (await o.get(`/webhook-endpoints/${ep.body.id}/deliveries`)).body.items.find((x: any) => x.id === failed.id);
+      return d?.status === 'DELIVERED' ? d : null;
+    });
+    expect(redone.attempts).toBe(2);
+
+    // Paused endpoints receive nothing; other workspaces cannot touch the endpoint.
+    await o.patch(`/webhook-endpoints/${ep.body.id}`, { active: false });
+    const before = rx.hits.length;
+    await o.post('/leads', { name: 'Silent', phone: '9777700002' });
+    await new Promise((r) => setTimeout(r, 2000));
+    expect(rx.hits.length).toBe(before);
+    expect((await agent.get('/webhook-endpoints')).status).toBe(403);
+    const other = await registerOrg('HooksOther');
+    expect((await other.get('/webhook-endpoints')).body).toHaveLength(0);
+    expect((await other.get(`/webhook-endpoints/${ep.body.id}/deliveries`)).status).toBe(404);
+    expect((await other.del(`/webhook-endpoints/${ep.body.id}`)).status).toBe(404);
+    expect((await o.del(`/webhook-endpoints/${ep.body.id}`)).status).toBe(200);
+  });
+});
+
+describe('integrations: website forms and the public API', () => {
+  it('turns form submissions into leads through the queue, with mapping, de-duplication and auto-assignment', async () => {
+    const o = await registerOrg('Forms');
+    const a = await addMember(o, 'Sales Agent');
+    const b = await addMember(o, 'Sales Agent');
+    await o.post('/assignment-rules', { name: 'Web', userIds: [a.userId, b.userId] });
+    const sources = (await o.get('/sources')).body;
+    const web = sources.find((s: any) => s.name === 'Website').id;
+    await o.post('/custom-fields', { label: 'Budget', type: 'NUMBER' });
+
+    expect((await o.get('/integrations/providers')).body.providers.map((p: any) => p.key)).toEqual(['website_form']);
+    const created = await o.post('/integrations', { provider: 'website_form', name: 'Landing page', settings: { sourceId: web, ownerId: 'auto', duplicateStrategy: 'skip' }, fieldMapping: { name: 'full_name', cf_budget: 'budget' } });
+    expect(created.status).toBe(201);
+    expect(created.body).toMatchObject({ status: 'CONNECTED' });
+    expect(created.body.token).toMatch(/^pmf_/);
+    expect(created.body.endpointUrl).toContain(`/api/v1/hooks/website_form/${created.body.id}`);
+    const { id, token } = created.body;
+    const hook = `/api/v1/hooks/website_form/${id}`;
+
+    expect((await request(server).post(hook).send({ full_name: 'X' })).status).toBe(401);
+    expect((await request(server).post(hook + '?token=wrong').send({ full_name: 'X' })).status).toBe(401);
+    const sub = await request(server).post(hook).set('X-Form-Token', token).send({ full_name: 'Form Lead', phone: '9888800001', budget: '45', message: 'Please call after 6pm', _hp: '' });
+    expect(sub.status).toBe(202);
+    const lead = await until(async () => (await o.get('/leads?q=Form Lead')).body.items[0]);
+    expect(lead).toMatchObject({ phone: '9888800001', source: { name: 'Website' }, customFields: { budget: 45 } });
+    expect([a.userId, b.userId]).toContain(lead.owner.id);
+    const acts = (await o.get(`/leads/${lead.id}/activities`)).body;
+    expect(acts.find((x: any) => x.type === 'created').data).toMatchObject({ via: 'website_form', integrationId: id });
+    expect(acts.find((x: any) => x.type === 'note').data.body).toBe('Please call after 6pm');
+    const ev = await until(async () => (await o.get(`/integrations/${id}/events`)).body.items.find((e: any) => e.status === 'PROCESSED'));
+    expect(ev.lead.id).toBe(lead.id);
+
+    // Second submission with the same phone is a repeat enquiry: no new lead, a note on the existing one.
+    const again = await request(server).post(hook).set('X-Form-Token', token).send({ full_name: 'Form Lead Again', phone: '09888800001', message: 'Second enquiry' });
+    expect(again.status).toBe(202);
+    await until(async () => (await o.get(`/integrations/${id}/events`)).body.items.find((e: any) => e.status === 'SKIPPED'));
+    expect((await o.get('/leads?q=Form Lead')).body.total).toBe(1);
+    expect((await o.get(`/leads/${lead.id}/activities`)).body.filter((x: any) => x.type === 'note')).toHaveLength(2);
+    // Honeypot and duplicate external ids are acknowledged but create nothing.
+    expect((await request(server).post(hook + '?token=' + token).send({ full_name: 'Bot', phone: '9888800009', _hp: 'spam' })).status).toBe(202);
+    expect((await request(server).post(hook + '?token=' + token).send({ full_name: 'Ext', phone: '9888800003', _id: 'req-1' })).status).toBe(202);
+    const dup = await request(server).post(hook + '?token=' + token).send({ full_name: 'Ext', phone: '9888800003', _id: 'req-1' });
+    expect(dup.status).toBe(200);
+    expect(dup.body.duplicate).toBe(true);
+    await until(async () => (await o.get('/leads?q=Ext')).body.items[0]);
+    const events = (await o.get(`/integrations/${id}/events`)).body;
+    expect(events.items.map((e: any) => e.status).sort()).toEqual(['PROCESSED', 'PROCESSED', 'SKIPPED', 'SKIPPED']);
+    expect((await o.get('/integrations')).body[0].events).toMatchObject({ processed: 2, skipped: 2, failed: 0 });
+
+    // Form-encoded posts from a plain HTML form redirect when a redirect URL is set; a submission with nothing usable fails visibly.
+    await o.patch(`/integrations/${id}`, { settings: { sourceId: web, ownerId: 'auto', duplicateStrategy: 'skip', redirectUrl: 'https://example.com/thanks' } });
+    const html = await request(server).post(hook).type('form').send({ _token: token, full_name: 'Browser Lead', phone: '9888800004' });
+    expect(html.status).toBe(303);
+    expect(html.headers.location).toBe('https://example.com/thanks');
+    await until(async () => (await o.get('/leads?q=Browser Lead')).body.items[0]);
+    await request(server).post(hook + '?token=' + token).send({ comment: 'no contact details at all' });
+    const failed = await until(async () => (await o.get(`/integrations/${id}/events`)).body.items.find((e: any) => e.status === 'FAILED'));
+    expect(failed.error).toContain('name, phone or email');
+    expect((await o.post(`/integrations/${id}/events/${failed.id}/retry`)).status).toBe(200);
+
+    // Disabled integrations reject submissions; tokens rotate; other workspaces see nothing.
+    await o.patch(`/integrations/${id}`, { status: 'DISABLED' });
+    expect((await request(server).post(hook + '?token=' + token).send({ full_name: 'Late' })).status).toBe(404);
+    await o.patch(`/integrations/${id}`, { status: 'CONNECTED' });
+    const rotated = (await o.post(`/integrations/${id}/rotate-token`)).body.token;
+    expect((await request(server).post(hook + '?token=' + token).send({ full_name: 'Old token' })).status).toBe(401);
+    expect((await request(server).post(hook + '?token=' + rotated).send({ full_name: 'New token', phone: '9888800005' })).status).toBe(202);
+    expect((await a.get('/integrations')).status).toBe(403);
+    const other = await registerOrg('FormsOther');
+    expect((await other.get('/integrations')).body).toHaveLength(0);
+    expect((await other.get(`/integrations/${id}/events`)).status).toBe(404);
+    expect((await other.post('/integrations', { provider: 'website_form', name: 'X', settings: { sourceId: web } })).status).toBe(400);
+  });
+
+  it('captures leads through the public API with a bearer key', async () => {
+    const o = await registerOrg('ApiKeys');
+    const k = await o.post('/api-keys', { name: 'Zapier' });
+    expect(k.status).toBe(201);
+    expect(k.body.key).toMatch(/^pmc_live_/);
+    expect((await o.get('/api-keys')).body[0].key).toBeUndefined();
+    const pub = (path: string) => request(server).post(`/api/v1${path}`);
+    expect((await pub('/public/leads').send({ name: 'No key' })).status).toBe(401);
+    expect((await pub('/public/leads').set('Authorization', 'Bearer pmc_live_nope').send({ name: 'Bad key' })).status).toBe(401);
+    expect((await request(server).get('/api/v1/public/me').set('Authorization', `Bearer ${k.body.key}`)).body.key).toBe('Zapier');
+
+    const r = await pub('/public/leads').set('Authorization', `Bearer ${k.body.key}`).send({ name: 'API Lead', email: 'API@Example.com', source: 'Partner portal', message: 'From the partner', externalId: 'ext-9' });
+    expect(r.status).toBe(201);
+    expect(r.body.outcome).toBe('created');
+    const lead = (await o.get(`/leads/${r.body.id}`)).body;
+    expect(lead).toMatchObject({ email: 'api@example.com', source: { name: 'Partner portal' }, owner: null });
+    expect((await o.get('/sources')).body.map((s: any) => s.name)).toContain('Partner portal');
+    const again = await pub('/public/leads').set('Authorization', `Bearer ${k.body.key}`).send({ email: 'api@example.com', company: 'Acme', duplicateStrategy: 'update' });
+    expect(again.body).toEqual({ id: r.body.id, outcome: 'updated' });
+    expect((await o.get(`/leads/${r.body.id}`)).body.company).toBe('Acme');
+    expect((await pub('/public/leads').set('Authorization', `Bearer ${k.body.key}`).send({ email: 'not-an-email' })).status).toBe(400);
+    expect((await o.get('/api-keys')).body[0].lastUsedAt).toBeTruthy();
+
+    expect((await o.del(`/api-keys/${k.body.id}`)).status).toBe(200);
+    expect((await pub('/public/leads').set('Authorization', `Bearer ${k.body.key}`).send({ name: 'Revoked' })).status).toBe(401);
+    const other = await registerOrg('ApiKeysOther');
+    expect((await other.del(`/api-keys/${k.body.id}`)).status).toBe(404);
+    expect((await other.get('/leads?q=API Lead')).body.total).toBe(0);
   });
 });
 

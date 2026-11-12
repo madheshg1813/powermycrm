@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { Context, Ctx, Perm, PrismaService, audit, pageSchema, parse } from '../common/core';
 import { LeadsService, serializeOpp, serializePayment } from './leads';
+import { OutboxService } from './webhooks';
 
 const text = (max: number) => z.string().trim().max(max).transform((v) => v || null).nullable().optional();
 const amount = z.coerce.number().min(0, 'Enter an amount').max(1e11);
@@ -68,6 +69,7 @@ export class OpportunitiesController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly leads: LeadsService,
+    private readonly outbox: OutboxService,
   ) {}
 
   private async visibleLead(ctx: Ctx, leadId: string) {
@@ -194,14 +196,18 @@ export class OpportunitiesController {
     } else if (Object.values(d).some((v) => v !== undefined)) {
       activities.push({ ...base, type: 'opportunity_updated', data: { id, name: d.name ?? o.name } });
     }
+    const events: string[] = [];
     const updated = await this.prisma.$transaction(async (tx) => {
       const u = await tx.opportunity.update({ where: { id }, data, include: oppInclude });
       if (activities.length) {
         await tx.leadActivity.createMany({ data: activities });
         await tx.lead.update({ where: { id: o.leadId }, data: { lastActivityAt: new Date() } });
       }
+      if (d.status === 'WON' && o.status !== 'WON') events.push(await this.outbox.emit(tx, ctx.orgId, 'opportunity.won', { opportunity: serializeOpp(u) }));
+      if (d.status === 'LOST' && o.status !== 'LOST') events.push(await this.outbox.emit(tx, ctx.orgId, 'opportunity.lost', { opportunity: serializeOpp(u) }));
       return u;
     });
+    this.outbox.kick(ctx.orgId, events);
     return serializeOpp(updated);
   }
 
@@ -224,6 +230,7 @@ export class PaymentsController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly leads: LeadsService,
+    private readonly outbox: OutboxService,
   ) {}
 
   private async find(ctx: Ctx, id: string) {
@@ -276,6 +283,7 @@ export class PaymentsController {
     await this.checkRefs(ctx, d.leadId, d.opportunityId);
     const org = await this.prisma.organisation.findUniqueOrThrow({ where: { id: ctx.orgId }, select: { currency: true } });
     const paidAt = d.status === 'PAID' ? d.paidAt ?? new Date() : null;
+    const events: string[] = [];
     const p = await this.prisma.$transaction(async (tx) => {
       const p = await tx.payment.create({
         data: { organisationId: ctx.orgId, leadId: d.leadId, opportunityId: d.opportunityId ?? null, amount: d.amount, currency: org.currency, status: d.status, method: d.method, reference: d.reference ?? null, notes: d.notes ?? null, dueAt: d.dueAt ?? null, paidAt, createdById: ctx.userId },
@@ -284,8 +292,10 @@ export class PaymentsController {
       await tx.leadActivity.create({ data: { organisationId: ctx.orgId, leadId: d.leadId, actorId: ctx.userId, type: d.status === 'PAID' ? 'payment_received' : 'payment_recorded', data: { id: p.id, amount: d.amount, currency: org.currency, method: d.method, reference: d.reference ?? null } } });
       await tx.lead.update({ where: { id: d.leadId }, data: { lastActivityAt: new Date() } });
       await audit(tx, ctx, 'payment.created', 'payment', p.id, { amount: d.amount, status: d.status });
+      if (d.status === 'PAID') events.push(await this.outbox.emit(tx, ctx.orgId, 'payment.received', { payment: serializePayment(p) }));
       return p;
     });
+    this.outbox.kick(ctx.orgId, events);
     return serializePayment(p);
   }
 
@@ -309,6 +319,7 @@ export class PaymentsController {
     } else if (Object.values(d).some((v) => v !== undefined)) {
       activities.push({ ...base, type: 'payment_updated', data: { id, amount: amt } });
     }
+    const events: string[] = [];
     const updated = await this.prisma.$transaction(async (tx) => {
       const u = await tx.payment.update({ where: { id }, data, include: payInclude });
       if (activities.length) {
@@ -316,8 +327,11 @@ export class PaymentsController {
         await tx.lead.update({ where: { id: p.leadId }, data: { lastActivityAt: new Date() } });
       }
       await audit(tx, ctx, 'payment.updated', 'payment', id, d);
+      if (d.status === 'PAID' && p.status !== 'PAID') events.push(await this.outbox.emit(tx, ctx.orgId, 'payment.received', { payment: serializePayment(u) }));
+      if (d.status === 'REFUNDED' && p.status !== 'REFUNDED') events.push(await this.outbox.emit(tx, ctx.orgId, 'payment.refunded', { payment: serializePayment(u) }));
       return u;
     });
+    this.outbox.kick(ctx.orgId, events);
     return serializePayment(updated);
   }
 

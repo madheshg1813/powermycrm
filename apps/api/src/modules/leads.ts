@@ -17,6 +17,10 @@ import {
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { Context, Ctx, Perm, PrismaService, audit, normalizePhone, pageSchema, parse, requirePerm } from '../common/core';
+import { OutboxService } from './webhooks';
+
+export type IngestInput = { name?: string; phone?: string; email?: string; company?: string; city?: string; message?: string; sourceName?: string | null; customFields?: Record<string, unknown>; externalId?: string | null };
+export type IngestOptions = { ownerId: string | null; duplicateStrategy: 'skip' | 'update' | 'create'; sourceId: string | null; via: string; integrationId?: string | null; apiKeyId?: string | null };
 
 const text = (max: number) =>
   z.string().trim().max(max).transform((v) => v || null).nullable().optional();
@@ -190,7 +194,10 @@ export const csvCell = (v: unknown) => {
 
 @Injectable()
 export class LeadsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly outbox: OutboxService,
+  ) {}
 
   /** Owners whose leads the caller may see: null for everyone (ALL scope), the team's user ids, or just their own. */
   async ownerIds(ctx: Ctx): Promise<string[] | null> {
@@ -288,7 +295,10 @@ export class LeadsService {
   }
 
   fieldDefs(ctx: Ctx) {
-    return this.prisma.customField.findMany({ where: { organisationId: ctx.orgId }, orderBy: [{ position: 'asc' }, { createdAt: 'asc' }] });
+    return this.fieldDefsFor(ctx.orgId);
+  }
+  fieldDefsFor(organisationId: string) {
+    return this.prisma.customField.findMany({ where: { organisationId }, orderBy: [{ position: 'asc' }, { createdAt: 'asc' }] });
   }
 
   /**
@@ -320,10 +330,10 @@ export class LeadsService {
    * source wins over a general rule; deactivated users are skipped. Call `flush` in the same
    * transaction as the leads so each rule's position advances.
    */
-  async distributor(ctx: Ctx) {
+  async distributor(organisationId: string) {
     const [rules, members] = await Promise.all([
-      this.prisma.assignmentRule.findMany({ where: { organisationId: ctx.orgId, active: true }, orderBy: [{ position: 'asc' }, { createdAt: 'asc' }] }),
-      this.prisma.membership.findMany({ where: { organisationId: ctx.orgId, status: 'ACTIVE' }, select: { userId: true } }),
+      this.prisma.assignmentRule.findMany({ where: { organisationId, active: true }, orderBy: [{ position: 'asc' }, { createdAt: 'asc' }] }),
+      this.prisma.membership.findMany({ where: { organisationId, status: 'ACTIVE' }, select: { userId: true } }),
     ]);
     const active = new Set(members.map((m) => m.userId));
     const state = rules.map((r) => ({ id: r.id, sourceId: r.sourceId, users: r.userIds.filter((u) => active.has(u)), cursor: r.cursor, used: 0 }));
@@ -396,21 +406,21 @@ export class LeadsService {
     return null;
   }
 
-  private async defaultStage(ctx: Ctx) {
+  private async defaultStage(organisationId: string) {
     const stage = await this.prisma.stage.findFirst({
-      where: { organisationId: ctx.orgId, pipeline: { isDefault: true } },
+      where: { organisationId, pipeline: { isDefault: true } },
       orderBy: { position: 'asc' },
     });
     if (!stage) throw new BadRequestException('No pipeline is configured');
     return stage;
   }
 
-  private notifyAssigned(tx: Prisma.TransactionClient, ctx: Ctx, leads: { id: string; name: string }[], ownerId: string) {
-    if (ownerId === ctx.userId || !leads.length) return Promise.resolve();
+  private notifyAssigned(tx: Prisma.TransactionClient, organisationId: string, actorId: string | null, leads: { id: string; name: string }[], ownerId: string) {
+    if (ownerId === actorId || !leads.length) return Promise.resolve();
     const one = leads.length === 1;
     return tx.notification.create({
       data: {
-        organisationId: ctx.orgId,
+        organisationId,
         userId: ownerId,
         type: 'lead.assigned',
         title: one ? `New lead assigned: ${leads[0].name}` : `${leads.length} leads assigned to you`,
@@ -422,10 +432,10 @@ export class LeadsService {
   async create(ctx: Ctx, body: unknown) {
     const { labelIds, allowDuplicate, customFields, ...d } = parse(createSchema, body);
     // "auto" hands the lead to the assignment rules; it stays unassigned when no rule applies.
-    const auto = d.ownerId === 'auto' ? await this.distributor(ctx) : null;
+    const auto = d.ownerId === 'auto' ? await this.distributor(ctx.orgId) : null;
     if (!auto && d.ownerId !== undefined && d.ownerId !== ctx.userId) requirePerm(ctx, 'leads.assign');
     const ownerId = auto ? auto.next(d.sourceId ?? null) : d.ownerId === undefined ? ctx.userId : d.ownerId;
-    const stage = (await this.checkRefs(ctx, { ...d, ownerId, labelIds })) ?? (await this.defaultStage(ctx));
+    const stage = (await this.checkRefs(ctx, { ...d, ownerId, labelIds })) ?? (await this.defaultStage(ctx.orgId));
     const custom = await this.customValues(ctx, customFields, {}, true);
 
     const phoneNormalized = normalizePhone(d.phone);
@@ -434,6 +444,7 @@ export class LeadsService {
       if (duplicates.length) throw new ConflictException({ message: 'A lead with this phone or email already exists', code: 'DUPLICATE', duplicates });
     }
 
+    const events: string[] = [];
     const lead = await this.prisma.$transaction(async (tx) => {
       const lead = await tx.lead.create({
         data: {
@@ -458,10 +469,12 @@ export class LeadsService {
         include,
       });
       await tx.leadActivity.create({ data: { organisationId: ctx.orgId, leadId: lead.id, actorId: ctx.userId, type: 'created', data: { stage: stage.name } } });
-      if (ownerId) await this.notifyAssigned(tx, ctx, [lead], ownerId);
+      if (ownerId) await this.notifyAssigned(tx, ctx.orgId, ctx.userId, [lead], ownerId);
       await auto?.flush(tx);
+      events.push(await this.outbox.emit(tx, ctx.orgId, 'lead.created', { lead: serialize(lead), via: 'app' }));
       return lead;
     });
+    this.outbox.kick(ctx.orgId, events);
     return serialize(lead);
   }
 
@@ -535,6 +548,7 @@ export class LeadsService {
     }
     if (Object.keys(changes).length) activities.push({ ...base, type: 'updated', data: { changes } as Prisma.InputJsonValue });
 
+    const events: string[] = [];
     const updated = await this.prisma.$transaction(async (tx) => {
       if (labelIds) {
         await tx.leadLabel.deleteMany({ where: { leadId: id } });
@@ -544,9 +558,13 @@ export class LeadsService {
         await tx.leadActivity.createMany({ data: activities });
         data.lastActivityAt = new Date();
       }
-      if (newOwner) await this.notifyAssigned(tx, ctx, [lead], newOwner.id);
-      return tx.lead.update({ where: { id }, data, include });
+      if (newOwner) await this.notifyAssigned(tx, ctx.orgId, ctx.userId, [lead], newOwner.id);
+      const row = await tx.lead.update({ where: { id }, data, include });
+      if (stage && stage.id !== lead.stageId) events.push(await this.outbox.emit(tx, ctx.orgId, 'lead.stage_changed', { lead: serialize(row), from: { id: lead.stage.id, name: lead.stage.name, type: lead.stage.type }, to: { id: stage.id, name: stage.name, type: stage.type } }));
+      if (d.ownerId !== undefined && d.ownerId !== lead.ownerId) events.push(await this.outbox.emit(tx, ctx.orgId, 'lead.assigned', { lead: serialize(row), from: lead.owner, to: newOwner }));
+      return row;
     });
+    this.outbox.kick(ctx.orgId, events);
     return serialize(updated);
   }
 
@@ -582,6 +600,7 @@ export class LeadsService {
     const found = leads.map((l) => l.id);
     if (!found.length) throw new NotFoundException('No matching leads');
     const base = { organisationId: ctx.orgId, actorId: ctx.userId };
+    const events: string[] = [];
 
     await this.prisma.$transaction(async (tx) => {
       if (action === 'assign') {
@@ -590,7 +609,8 @@ export class LeadsService {
         const owner = ownerId ? await tx.user.findUnique({ where: { id: ownerId }, select: { name: true } }) : null;
         await tx.lead.updateMany({ where: { id: { in: found } }, data: { ownerId, lastActivityAt: new Date() } });
         await tx.leadActivity.createMany({ data: found.map((leadId) => ({ ...base, leadId, type: 'assigned', data: { to: owner?.name ?? null } })) });
-        if (ownerId) await this.notifyAssigned(tx, ctx, leads, ownerId);
+        if (ownerId) await this.notifyAssigned(tx, ctx.orgId, ctx.userId, leads, ownerId);
+        for (const l of leads) events.push(await this.outbox.emit(tx, ctx.orgId, 'lead.assigned', { lead: { id: l.id, name: l.name }, to: ownerId ? { id: ownerId, name: owner?.name ?? null } : null, bulk: true }));
       } else if (action === 'stage') {
         const stage = await this.checkRefs(ctx, { stageId: value ?? '' });
         if (!stage) throw new BadRequestException('Stage not found');
@@ -599,6 +619,7 @@ export class LeadsService {
           data: { stageId: stage.id, pipelineId: stage.pipelineId, stageEnteredAt: new Date(), lastActivityAt: new Date() },
         });
         await tx.leadActivity.createMany({ data: found.map((leadId) => ({ ...base, leadId, type: 'stage_changed', data: { to: stage.name } })) });
+        for (const l of leads) events.push(await this.outbox.emit(tx, ctx.orgId, 'lead.stage_changed', { lead: { id: l.id, name: l.name }, to: { id: stage.id, name: stage.name, type: stage.type }, bulk: true }));
       } else if (action === 'addToList' || action === 'removeFromList') {
         const list = value ? await tx.leadList.findFirst({ where: { id: value, organisationId: ctx.orgId } }) : null;
         if (!list) throw new BadRequestException('List not found');
@@ -619,9 +640,11 @@ export class LeadsService {
       } else {
         await tx.lead.updateMany({ where: { id: { in: found } }, data: { archivedAt: action === 'archive' ? new Date() : null } });
         await tx.leadActivity.createMany({ data: found.map((leadId) => ({ ...base, leadId, type: action === 'archive' ? 'archived' : 'restored' })) });
+        if (action === 'archive') for (const l of leads) events.push(await this.outbox.emit(tx, ctx.orgId, 'lead.archived', { lead: { id: l.id, name: l.name } }));
       }
       await audit(tx, ctx, `leads.bulk.${action}`, 'lead', null, { count: found.length, value });
     });
+    this.outbox.kick(ctx.orgId, events);
     return { updated: found.length, skipped: ids.length - found.length };
   }
 
@@ -665,11 +688,11 @@ export class LeadsService {
 
   async import(ctx: Ctx, body: unknown) {
     const { rows, duplicateStrategy, ownerId: requestedOwner, sourceId } = parse(importSchema, body);
-    const auto = requestedOwner === 'auto' ? await this.distributor(ctx) : null;
+    const auto = requestedOwner === 'auto' ? await this.distributor(ctx.orgId) : null;
     if (!auto && requestedOwner !== undefined && requestedOwner !== ctx.userId) requirePerm(ctx, 'leads.assign');
     const ownerId = auto ? null : requestedOwner === undefined ? ctx.userId : requestedOwner;
     await this.checkRefs(ctx, { ownerId, sourceId });
-    const stage = await this.defaultStage(ctx);
+    const stage = await this.defaultStage(ctx.orgId);
     const defs = await this.fieldDefs(ctx);
 
     const str = (v: unknown, max: number) => (v === null || v === undefined ? '' : String(v).trim().slice(0, max));
@@ -727,6 +750,7 @@ export class LeadsService {
     const byEmail = new Map(existing.filter((e) => e.email).map((e) => [e.email!.toLowerCase(), e.id]));
 
     let created = 0, updated = 0, skipped = 0;
+    const events: string[] = [];
     const toCreate: Clean[] = [];
     const seen = new Set<string>();
     const updates: { id: string; c: Clean }[] = [];
@@ -776,8 +800,9 @@ export class LeadsService {
         await tx.leadActivity.createMany({ data: acts });
         created = rowsCreated.length;
         for (const owner of new Set(rowsCreated.map((l) => l.ownerId))) {
-          if (owner) await this.notifyAssigned(tx, ctx, rowsCreated.filter((l) => l.ownerId === owner), owner);
+          if (owner) await this.notifyAssigned(tx, ctx.orgId, ctx.userId, rowsCreated.filter((l) => l.ownerId === owner), owner);
         }
+        for (const l of rowsCreated) events.push(await this.outbox.emit(tx, ctx.orgId, 'lead.created', { lead: { id: l.id, name: l.name, ownerId: l.ownerId }, via: 'import' }));
       }
       for (const { id, c } of updates) {
         const data: Prisma.LeadUncheckedUpdateInput = { lastActivityAt: new Date() };
@@ -796,8 +821,92 @@ export class LeadsService {
       }
       await audit(tx, ctx, 'leads.imported', 'lead', null, { created, updated, skipped, errors: errors.length });
     }, { timeout: 60_000 });
+    this.outbox.kick(ctx.orgId, events);
 
     return { created, updated, skipped, errors };
+  }
+
+  /**
+   * Creates a lead on behalf of an integration or the public API, with no signed-in user. De-duplicates on phone
+   * or email inside the organisation by the chosen strategy, resolves the source by name, assigns by rule when
+   * ownerId is "auto", and records where the lead came from on its timeline.
+   */
+  async ingest(organisationId: string, input: IngestInput, opts: IngestOptions): Promise<{ leadId: string; outcome: 'created' | 'updated' | 'skipped' }> {
+    const str = (v: unknown, max: number) => (v === null || v === undefined ? '' : String(v).trim().slice(0, max));
+    const name = str(input.name, 160), phone = str(input.phone, 30) || null, email = str(input.email, 200).toLowerCase() || null;
+    if (!name && !phone && !email) throw new BadRequestException('A lead needs at least a name, phone or email');
+    if (email && !z.string().email().safeParse(email).success) throw new BadRequestException(`Invalid email "${email}"`);
+    const phoneNormalized = normalizePhone(phone);
+    const defs = await this.fieldDefsFor(organisationId);
+    const custom: Record<string, unknown> = {};
+    for (const f of defs) {
+      const raw = input.customFields?.[f.key];
+      if (raw === undefined) continue;
+      const r = cleanCustomValue(f, raw);
+      if ('error' in r) throw new BadRequestException(`${f.label} ${r.error}`);
+      if (r.value !== null) custom[f.key] = r.value;
+    }
+    // Source: explicit id from the integration settings wins; otherwise a name from the submission, created if new.
+    let sourceId = opts.sourceId;
+    const sourceName = str(input.sourceName, 80);
+    if (!sourceId && sourceName) {
+      const s = await this.prisma.leadSource.findFirst({ where: { organisationId, name: { equals: sourceName, mode: 'insensitive' } } });
+      sourceId = s ? s.id : (await this.prisma.leadSource.create({ data: { organisationId, name: sourceName } })).id;
+    }
+    if (opts.ownerId && opts.ownerId !== 'auto' && !(await this.prisma.membership.findFirst({ where: { userId: opts.ownerId, organisationId, status: 'ACTIVE' } }))) {
+      throw new BadRequestException('Owner is not an active user in this workspace');
+    }
+    const message = str(input.message, 5000) || null;
+    const meta = { via: opts.via, integrationId: opts.integrationId ?? undefined, externalId: input.externalId ?? undefined };
+
+    const existing = phoneNormalized || email
+      ? await this.prisma.lead.findFirst({ where: { organisationId, archivedAt: null, OR: [...(phoneNormalized ? [{ phoneNormalized }] : []), ...(email ? [{ email: { equals: email, mode: 'insensitive' as const } }] : [])] }, orderBy: { createdAt: 'asc' } })
+      : null;
+    if (existing && opts.duplicateStrategy !== 'create') {
+      const update = opts.duplicateStrategy === 'update';
+      const data: Prisma.LeadUncheckedUpdateInput = { lastActivityAt: new Date() };
+      if (update) {
+        if (!existing.company && str(input.company, 160)) data.company = str(input.company, 160);
+        if (!existing.city && str(input.city, 100)) data.city = str(input.city, 100);
+        if (!existing.email && email) data.email = email;
+        if (!existing.phone && phone) { data.phone = phone; data.phoneNormalized = phoneNormalized; }
+        if (!existing.sourceId && sourceId) data.sourceId = sourceId;
+        if (Object.keys(custom).length) data.customFields = { ...(existing.customFields as object), ...custom } as Prisma.InputJsonObject;
+      }
+      await this.prisma.$transaction(async (tx) => {
+        await tx.lead.update({ where: { id: existing.id }, data });
+        await tx.leadActivity.create({ data: { organisationId, leadId: existing.id, type: update ? 'updated' : 'enquiry', data: { ...meta, name: name || undefined, message: message ?? undefined } } });
+        if (message) await tx.leadActivity.create({ data: { organisationId, leadId: existing.id, type: 'note', data: { body: message, via: opts.via } } });
+        if (existing.ownerId) {
+          await tx.notification.create({ data: { organisationId, userId: existing.ownerId, type: 'lead.enquiry', title: `${existing.name} enquired again via ${opts.via === 'website_form' ? 'your website' : opts.via}`, link: `/leads/${existing.id}` } });
+        }
+      });
+      return { leadId: existing.id, outcome: update ? 'updated' : 'skipped' };
+    }
+
+    const stage = await this.defaultStage(organisationId);
+    const auto = opts.ownerId === 'auto' ? await this.distributor(organisationId) : null;
+    const ownerId = auto ? auto.next(sourceId ?? null) : opts.ownerId === 'auto' ? null : opts.ownerId;
+    const events: string[] = [];
+    const lead = await this.prisma.$transaction(async (tx) => {
+      const lead = await tx.lead.create({
+        data: {
+          organisationId, name: name || phone || email!, phone, phoneNormalized, email,
+          company: str(input.company, 160) || null, city: str(input.city, 100) || null,
+          sourceId: sourceId ?? null, ownerId, pipelineId: stage.pipelineId, stageId: stage.id,
+          customFields: custom as Prisma.InputJsonObject,
+        },
+        include,
+      });
+      await tx.leadActivity.create({ data: { organisationId, leadId: lead.id, type: 'created', data: { ...meta, stage: stage.name } } });
+      if (message) await tx.leadActivity.create({ data: { organisationId, leadId: lead.id, type: 'note', data: { body: message, via: opts.via } } });
+      if (ownerId) await this.notifyAssigned(tx, organisationId, null, [lead], ownerId);
+      await auto?.flush(tx);
+      events.push(await this.outbox.emit(tx, organisationId, 'lead.created', { lead: serialize(lead), via: opts.via }));
+      return lead;
+    });
+    this.outbox.kick(organisationId, events);
+    return { leadId: lead.id, outcome: 'created' };
   }
 }
 

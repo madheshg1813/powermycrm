@@ -1,6 +1,6 @@
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
-import { json } from 'express';
+import { json, urlencoded } from 'express';
 
 try {
   process.loadEnvFile();
@@ -15,6 +15,7 @@ async function bootstrap() {
   jwtSecret(); // fail fast on missing configuration
   const app = await NestFactory.create(AppModule, { bodyParser: false });
   app.use(json({ limit: '5mb' }));
+  app.use(urlencoded({ extended: false, limit: '1mb' }));
   configureApp(app);
   app.enableShutdownHooks();
   const port = Number(process.env.PORT ?? 4000);

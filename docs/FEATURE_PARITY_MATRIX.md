@@ -8,9 +8,11 @@ the browser, **None** = untested. Rows marked (ext) go beyond what TeleCRM docum
 | Feature | TeleCRM reference | PowerMyCRM implementation | Status | Test status |
 |---|---|---|---|---|
 | Excel upload with field mapping | /features 1.1 | CSV import, column mapping, duplicate strategy, row errors. `.xlsx` not yet | Frontend In Progress | API; screen None |
-| Facebook lead capture | /features 1.2 | — | Not Started | None |
-| Custom API lead capture | /features 1.3 | — | Designed | None |
-| Automatic lead distribution | /features 1.4 | Round-robin rules per source or all sources, used by "Auto-assign by rule" on create and import; skips deactivated users. No conditional rules; not yet triggered by integrations | Testing | API; rules screen None, form option Manual |
+| Website forms (ext) | — | Form endpoint per integration with token, field mapping, source, duplicate strategy, auto-assignment, honeypot, thank-you redirect, event log with retry | Testing | API + Manual |
+| Outbound webhooks (ext) | — | Signed JSON per event type, retries with backoff, delivery log, test events, secret rotation | Testing | API + Manual |
+| Facebook lead capture | /features 1.2 | Framework ready; needs a reviewed Meta app | Blocked | None |
+| Custom API lead capture | /features 1.3 | Bearer API keys (Settings → Integrations), `POST /public/leads` with de-duplication strategy and rule-based assignment | Testing | API + Manual |
+| Automatic lead distribution | /features 1.4 | Round-robin rules per source or all sources, used by "Auto-assign by rule" on create, import, website forms and the public API; skips deactivated users. No conditional rules | Testing | API; rules screen Manual |
 | Lead management, tracking | /features 4.1 | Lead CRUD, list, search, filters, sort, pagination, detail page | Completed | API + Manual |
 | Transfer leads between users/teams | /features 4.1 | Single and bulk reassign, notification to new owner | Testing | API; screen None |
 | Customisable sales pipelines | /features 4.1 | Multiple pipelines, custom stages, colours, order, Kanban | Testing | API + Manual (drag untested) |
