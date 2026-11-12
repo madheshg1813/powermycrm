@@ -5,7 +5,7 @@ import { toLocalInput } from '@/lib/format';
 import { Call, emitChanged, useRefs } from '@/lib/refs';
 import { Field, Modal, Spinner } from './ui';
 
-export const CALL_STATUS: Record<Call['status'], string> = { COMPLETED: 'Spoke to them', NO_ANSWER: 'No answer', BUSY: 'Busy', FAILED: 'Could not connect', CANCELLED: 'Cancelled', MISSED: 'Missed (inbound)' };
+export const CALL_STATUS: Record<Call['status'], string> = { INITIATED: 'Dialling', IN_PROGRESS: 'In progress', COMPLETED: 'Spoke to them', NO_ANSWER: 'No answer', BUSY: 'Busy', FAILED: 'Could not connect', CANCELLED: 'Cancelled', MISSED: 'Missed (inbound)' };
 
 /** Log a call on a lead, with outcome, duration, notes and an optional follow-up in one go. */
 export function LogCallForm({ open, onClose, leadId, phone, call, onSaved }: { open: boolean; onClose: () => void; leadId: string; phone: string | null; call?: Call | null; onSaved?: () => void }) {
@@ -45,7 +45,7 @@ export function LogCallForm({ open, onClose, leadId, phone, call, onSaved }: { o
       <form id="call-form" className="grid gap-3.5 sm:grid-cols-2" onSubmit={save}>
         {error && <p className="rounded-xl bg-danger-soft px-3 py-2 text-danger sm:col-span-2" role="alert">{error}</p>}
         <Field label="Direction"><select className="input" value={f.direction} onChange={set('direction')}><option value="OUTBOUND">I called them</option><option value="INBOUND">They called me</option></select></Field>
-        <Field label="What happened"><select className="input" value={f.status} onChange={set('status')}>{Object.entries(CALL_STATUS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></Field>
+        <Field label="What happened"><select className="input" value={f.status} onChange={set('status')}>{Object.entries(CALL_STATUS).filter(([k]) => k !== 'INITIATED' && k !== 'IN_PROGRESS').map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></Field>
         {f.status === 'COMPLETED' && (
           <Field label="Duration"><div className="flex items-center gap-2"><input className="input" type="number" min={0} value={f.minutes} onChange={set('minutes')} placeholder="min" aria-label="Minutes" /><span className="text-ink-muted">:</span><input className="input" type="number" min={0} max={59} value={f.seconds} onChange={set('seconds')} placeholder="sec" aria-label="Seconds" /></div></Field>
         )}

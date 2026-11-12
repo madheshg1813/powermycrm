@@ -53,6 +53,7 @@ export function Integrations() {
   return (
     <>
       <EmailSetup />
+      <ProviderCards />
       <WebsiteForms />
       <Webhooks />
       <ApiKeys />
@@ -60,7 +61,7 @@ export function Integrations() {
   );
 }
 
-type EmailStatus = { canSend: boolean; via: string | null; platformConfigured: boolean; integration: (Integration & { credentials: { host: string; port: number; secure: boolean; user: string; from: string; hasPassword: boolean } | null }) | null };
+type EmailStatus = { canSend: boolean; via: string | null; platformConfigured: boolean; integration: (Integration & { credentials: { host: string; port: number; secure: boolean; user: string; from: string; has_pass: boolean } | null }) | null };
 type EmailRow = { id: string; kind: string; to: string; subject: string; status: 'QUEUED' | 'SENT' | 'FAILED' | 'SKIPPED'; provider: string | null; error: string | null; sentAt: string | null; createdAt: string };
 
 function EmailSetup() {
@@ -119,7 +120,7 @@ function EmailSetup() {
           <Field label="SMTP host"><input className="input" value={f.host} onChange={(e) => setF({ ...f, host: e.target.value })} placeholder="smtp.gmail.com" required autoFocus /></Field>
           <Field label="Port"><input className="input" type="number" value={f.port} onChange={(e) => setF({ ...f, port: e.target.value })} min={1} max={65535} required /></Field>
           <Field label="Username"><input className="input" value={f.user} onChange={(e) => setF({ ...f, user: e.target.value })} placeholder="you@yourcompany.com" autoComplete="off" /></Field>
-          <Field label={i?.credentials?.hasPassword ? 'Password (leave blank to keep)' : 'Password or app password'}><input className="input" type="password" value={f.pass} onChange={(e) => setF({ ...f, pass: e.target.value })} autoComplete="new-password" /></Field>
+          <Field label={i?.credentials?.has_pass ? 'Password (leave blank to keep)' : 'Password or app password'}><input className="input" type="password" value={f.pass} onChange={(e) => setF({ ...f, pass: e.target.value })} autoComplete="new-password" /></Field>
           <Field label="From address" hint="What recipients see" className="sm:col-span-2"><input className="input" value={f.from} onChange={(e) => setF({ ...f, from: e.target.value })} placeholder="Sales Team <sales@yourcompany.com>" required /></Field>
           <label className="flex cursor-pointer items-center gap-2.5 sm:col-span-2"><input type="checkbox" checked={f.secure} onChange={(e) => setF({ ...f, secure: e.target.checked })} /><span>Use implicit TLS (port 465). Leave off for port 587 (STARTTLS).</span></label>
           <div className="flex gap-2 sm:col-span-2"><button className="btn-ink" disabled={busy}>Save and test</button><button type="button" className="btn-ghost" onClick={() => setF(null)}>Cancel</button></div>
@@ -139,6 +140,88 @@ function EmailSetup() {
             ))}
           </ul>
         </details>
+      )}
+    </section>
+  );
+}
+
+type ProviderDef = { key: string; name: string; category: string; auth: 'webhook_only' | 'credentials'; description: string; needs: string; credentialSchema: { key: string; label: string; type: 'text' | 'number' | 'boolean' | 'password' | 'select'; placeholder?: string; help?: string; options?: { value: string; label: string }[] }[]; secretKeys: string[]; webhook?: { path: string; note: string } };
+type Connected = Integration & { credentials: Record<string, unknown> | null; summary?: string | null };
+
+/** Providers that need the customer's own account: Razorpay, Exotel… Connected only after a real check against the service. */
+function ProviderCards() {
+  const { toast, confirm } = useUi();
+  const providers = useApi<{ providers: ProviderDef[] }>('/integrations/providers');
+  const list = useApi<Connected[]>('/integrations');
+  const [form, setForm] = useState<{ def: ProviderDef; existing: Connected | null; values: Record<string, string | boolean> } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const defs = (providers.data?.providers ?? []).filter((p) => p.auth === 'credentials' && p.key !== 'smtp');
+  if (!defs.length) return null;
+  const connectionOf = (key: string) => list.data?.find((i) => i.provider === key) ?? null;
+  const open = (def: ProviderDef) => {
+    const existing = connectionOf(def.key);
+    const values: Record<string, string | boolean> = {};
+    for (const f of def.credentialSchema) values[f.key] = f.type === 'boolean' ? Boolean(existing?.credentials?.[f.key] ?? false) : String(existing?.credentials?.[f.key] ?? (f.type === 'select' ? f.options?.[0]?.value ?? '' : ''));
+    setForm({ def, existing, values });
+  };
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    if (!form) return;
+    setBusy(true);
+    try {
+      const credentials: Record<string, unknown> = {};
+      for (const f of form.def.credentialSchema) {
+        const v = form.values[f.key];
+        if (f.type === 'password' && !v) continue; // keep the stored secret
+        credentials[f.key] = f.type === 'number' ? Number(v) : v;
+      }
+      const r = await api<Connected>(form.existing ? `/integrations/${form.existing.id}` : '/integrations', { method: form.existing ? 'PATCH' : 'POST', body: form.existing ? { credentials } : { provider: form.def.key, name: form.def.name, credentials } });
+      toast(r.status === 'CONNECTED' ? `${form.def.name} connected. ${r.summary ?? ''}` : `Saved, but the connection failed: ${r.lastError ?? 'check the details'}`, r.status === 'CONNECTED' ? 'success' : 'error');
+      setForm(null);
+      list.reload();
+    } catch (err) { toast((err as Error).message, 'error'); } finally { setBusy(false); }
+  }
+  const act = async (fn: () => Promise<unknown>, ok: string) => { setBusy(true); try { await fn(); toast(ok); list.reload(); } catch (e) { toast((e as Error).message, 'error'); } finally { setBusy(false); } };
+
+  return (
+    <section className="card">
+      <div className="card-pad pb-3"><h2 className="card-title">Connected services</h2><p className="text-ink-muted">Each service needs an account with that provider. A service shows as connected only after PowerMyCRM has signed in to it successfully.</p></div>
+      <ul className="divide-y divide-ink/5 border-y border-ink/10">
+        {defs.map((def) => {
+          const c = connectionOf(def.key);
+          return (
+            <li key={def.key} className="px-5 py-3.5">
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="min-w-0 flex-1">
+                  <span className="font-medium">{def.name}</span>
+                  <span className={cx('ml-2', !c ? 'pill-muted' : c.status === 'CONNECTED' ? 'pill-green' : c.status === 'ERROR' ? 'pill-danger' : 'pill-amber')}>{!c ? 'Not connected' : c.status === 'CONNECTED' ? 'Connected' : c.status === 'ERROR' ? 'Connection failed' : c.status === 'DISABLED' ? 'Paused' : 'Awaiting test'}</span>
+                  <span className="block text-[13px] text-ink-muted">{def.description}</span>
+                  {!c && <span className="block text-[13px] text-ink-muted"><strong className="font-medium text-ink-soft">You need:</strong> {def.needs}</span>}
+                  {c?.lastError && <span className="block text-[13px] text-danger">{c.lastError}</span>}
+                </span>
+                {c && <button className="btn-ghost btn-sm" disabled={busy} onClick={() => act(() => api(`/integrations/${c.id}/test`, { body: {} }), 'Connection tested')}><RefreshCw className="h-3.5 w-3.5" />Test</button>}
+                <button className="btn-ghost btn-sm" onClick={() => open(def)}>{c ? 'Edit' : 'Connect'}</button>
+                {c && <button className="btn-icon" disabled={busy} aria-label={`Remove ${def.name}`} onClick={async () => { if (await confirm({ title: `Disconnect ${def.name}?`, text: 'Features that depend on it stop working until it is connected again.', confirmLabel: 'Disconnect', danger: true })) act(() => api(`/integrations/${c.id}`, { method: 'DELETE' }), `${def.name} disconnected`); }}><Trash2 className="h-4 w-4" /></button>}
+              </div>
+              {c && def.webhook && c.endpointUrl && (
+                <div className="mt-2 text-[13px]"><span className="text-ink-muted">Webhook URL for {def.name}: </span><code className="rounded-lg bg-cream px-2 py-1 break-all">{c.endpointUrl}</code> <CopyButton text={c.endpointUrl} /><span className="mt-1 block text-ink-muted">{def.webhook.note}</span></div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {form && (
+        <form className="grid gap-3 card-pad sm:grid-cols-2" onSubmit={save}>
+          <p className="text-ink-muted sm:col-span-2"><strong className="font-medium text-ink-soft">{form.def.name}.</strong> {form.def.needs}</p>
+          {form.def.credentialSchema.map((f) => f.type === 'boolean'
+            ? <label key={f.key} className="flex cursor-pointer items-center gap-2.5"><input type="checkbox" checked={Boolean(form.values[f.key])} onChange={(e) => setForm({ ...form, values: { ...form.values, [f.key]: e.target.checked } })} /><span>{f.label}{f.help ? <span className="block text-[12px] text-ink-muted">{f.help}</span> : null}</span></label>
+            : <Field key={f.key} label={f.type === 'password' && form.existing?.credentials?.[`has_${f.key}`] ? `${f.label} (leave blank to keep)` : f.label} hint={f.help}>
+                {f.type === 'select'
+                  ? <select className="input" value={String(form.values[f.key] ?? '')} onChange={(e) => setForm({ ...form, values: { ...form.values, [f.key]: e.target.value } })}>{f.options?.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select>
+                  : <input className="input" type={f.type === 'password' ? 'password' : f.type === 'number' ? 'number' : 'text'} value={String(form.values[f.key] ?? '')} onChange={(e) => setForm({ ...form, values: { ...form.values, [f.key]: e.target.value } })} placeholder={f.placeholder} autoComplete="off" />}
+              </Field>)}
+          <div className="flex gap-2 sm:col-span-2"><button className="btn-ink" disabled={busy}>{busy ? 'Checking…' : 'Save and test connection'}</button><button type="button" className="btn-ghost" onClick={() => setForm(null)}>Cancel</button></div>
+        </form>
       )}
     </section>
   );

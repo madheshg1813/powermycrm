@@ -31,14 +31,14 @@ the browser, **None** = untested. Rows marked (ext) go beyond what TeleCRM docum
 | Push notifications | /features 2.8 | In-app notifications only | Backend In Progress | API |
 | 1-click dialer, click-to-call | /features 2.2–2.3 | `tel:` link opens the phone app; the call is logged with outcome, duration, notes and callback. No in-app dialling without a telephony provider | Testing | API + Manual |
 | Call log and dispositions (ext) | /crm-with-dialer | Manual call log per lead and per agent, workspace-defined outcomes, talk time on the leaderboard | Testing | API + Manual |
-| Call recording | /features 2.4 | — | Not Started | None |
-| IVR / telephony providers | /call-center-crm | — | Designed | None |
+| Call recording | /features 2.4 | Recording URL from Exotel stored on the call and linked on the lead page (recording itself stays with Exotel) | Integration Pending | API |
+| IVR / telephony providers | /call-center-crm | Exotel: click-to-call, terminal status and recording callbacks, incoming-call logging with owner notification | Integration Pending (needs an Exotel account) | API (stub server) |
 | 1-click WhatsApp, SMS, email | /features 2.5–2.6 | — | Not Started | None |
 | WhatsApp Cloud API inbox, templates, bulk, chatbot | /whatsapp-crm | — | Designed | None |
 | WhatsApp chat sync | /whatsapp-crm | — | Researching | None |
 | Triggers, workflows, drip | /features 4.5 | Automations: 9 triggers, conditions, 12 step types including wait (drip), per-run logs, manual test run | Testing | API + Manual |
 | Payment creation, forecasting | /features 2.9 | Deals per lead (value, probability, expected close, won/lost) with a forecast by expected-close month; manual payment records with received/expected/overdue totals. Payment links need a gateway (Razorpay, not connected) | Testing | API + Manual |
-| Razorpay | /integrations | — | Designed | None |
+| Razorpay | /integrations | Payment links from expected payments; webhook (signature-verified) marks them received; connection test against the Razorpay API | Integration Pending (needs the customer's keys) | API (stub server) |
 | Portal integrations (IndiaMART, Justdial, etc.) | /integrations | — | Designed | None |
 | Google Sheets, Google Meet, Shopify, WooCommerce | /integrations | — | Not Started | None |
 | Hour-by-hour, daily, sales, agent reports | /features 3 | Reports page: created/won/lost/won value by hour of day, day, week or month in the organisation timezone; filters by period preset or custom dates, agent and source; drill-down to the lead list; CSV export | Testing | API + Manual |

@@ -18,7 +18,7 @@ export const FIELD_TYPES: Record<CustomField['type'], string> = {
 export type LeadList = { id: string; name: string; description: string | null; kind: 'STATIC' | 'DYNAMIC'; filters: Record<string, string> | null; leads: number; mine: boolean; updatedAt?: string };
 export type CallDisposition = { id: string; name: string; position: number };
 export type Call = {
-  id: string; leadId: string | null; userId: string; direction: 'OUTBOUND' | 'INBOUND'; status: 'COMPLETED' | 'NO_ANSWER' | 'BUSY' | 'FAILED' | 'CANCELLED' | 'MISSED';
+  id: string; leadId: string | null; userId: string; direction: 'OUTBOUND' | 'INBOUND'; status: 'INITIATED' | 'IN_PROGRESS' | 'COMPLETED' | 'NO_ANSWER' | 'BUSY' | 'FAILED' | 'CANCELLED' | 'MISSED';
   phone: string | null; startedAt: string; durationSec: number | null; dispositionId: string | null; notes: string | null; recordingUrl: string | null;
   lead?: { id: string; name: string; phone: string | null } | null; user?: { id: string; name: string }; disposition?: { id: string; name: string } | null;
 };
@@ -40,20 +40,21 @@ export type Task = {
   lead?: { id: string; name: string; phone: string | null } | null; assignee?: { id: string; name: string };
 };
 
-type Refs = { pipelines: Pipeline[]; sources: Source[]; labels: Label[]; members: Member[]; fields: CustomField[]; lists: LeadList[]; dispositions: CallDisposition[]; ready: boolean; reload: () => Promise<void> };
+type Refs = { pipelines: Pipeline[]; sources: Source[]; labels: Label[]; members: Member[]; fields: CustomField[]; lists: LeadList[]; dispositions: CallDisposition[]; connected: Record<string, boolean>; ready: boolean; reload: () => Promise<void> };
 const RefsContext = createContext<Refs | null>(null);
 
 /** Reference lists every screen needs (stages, sources, labels, users), loaded once per workspace. */
 export function RefsProvider({ children }: { children: React.ReactNode }) {
-  const [state, setState] = useState<Omit<Refs, 'reload'>>({ pipelines: [], sources: [], labels: [], members: [], fields: [], lists: [], dispositions: [], ready: false });
+  const [state, setState] = useState<Omit<Refs, 'reload'>>({ pipelines: [], sources: [], labels: [], members: [], fields: [], lists: [], dispositions: [], connected: {}, ready: false });
   const reload = useCallback(async () => {
-    const [pipelines, sources, labels, members, fields, lists, dispositions] = await Promise.all([
+    const [pipelines, sources, labels, members, fields, lists, dispositions, connected] = await Promise.all([
       api<Pipeline[]>('/pipelines'), api<Source[]>('/sources'), api<Label[]>('/labels'), api<Member[]>('/users'), api<CustomField[]>('/custom-fields'),
       // Lists need leads.view; a role without it simply gets none.
       api<LeadList[]>('/lists').catch(() => [] as LeadList[]),
       api<CallDisposition[]>('/call-dispositions').catch(() => [] as CallDisposition[]),
+      api<Record<string, boolean>>('/integrations/connected').catch(() => ({} as Record<string, boolean>)),
     ]);
-    setState({ pipelines, sources, labels, members, fields, lists, dispositions, ready: true });
+    setState({ pipelines, sources, labels, members, fields, lists, dispositions, connected, ready: true });
   }, []);
   useEffect(() => {
     reload().catch(() => setState((s) => ({ ...s, ready: true })));
@@ -84,7 +85,7 @@ export type Opportunity = {
 export type Payment = {
   id: string; leadId: string; opportunityId: string | null; amount: number; currency: string;
   status: 'PENDING' | 'PAID' | 'FAILED' | 'REFUNDED'; method: 'CASH' | 'UPI' | 'BANK_TRANSFER' | 'CARD' | 'CHEQUE' | 'PAYMENT_LINK' | 'OTHER';
-  reference: string | null; notes: string | null; dueAt: string | null; paidAt: string | null; refundedAt: string | null; linkUrl: string | null;
+  reference: string | null; notes: string | null; dueAt: string | null; paidAt: string | null; refundedAt: string | null; linkUrl: string | null; provider: string | null;
   createdAt: string; lead?: { id: string; name: string; phone: string | null; ownerId: string | null }; opportunity?: { id: string; name: string } | null; createdBy?: { id: string; name: string } | null;
 };
 export const OPP_STATUS: Record<Opportunity['status'], string> = { OPEN: 'Open', WON: 'Won', LOST: 'Lost' };

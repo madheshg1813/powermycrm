@@ -54,7 +54,7 @@ async function addMember(owner: Client, roleName: string) {
 
 beforeAll(async () => {
   const mod = await Test.createTestingModule({ imports: [AppModule] }).compile();
-  app = configureApp(mod.createNestApplication());
+  app = configureApp(mod.createNestApplication({ rawBody: true }));
   await app.init();
   server = app.getHttpServer();
 });
@@ -1278,7 +1278,7 @@ describe('integrations: website forms and the public API', () => {
     const web = sources.find((s: any) => s.name === 'Website').id;
     await o.post('/custom-fields', { label: 'Budget', type: 'NUMBER' });
 
-    expect((await o.get('/integrations/providers')).body.providers.map((p: any) => p.key)).toEqual(['website_form', 'smtp']);
+    expect((await o.get('/integrations/providers')).body.providers.map((p: any) => p.key)).toEqual(['website_form', 'smtp', 'razorpay', 'exotel']);
     const created = await o.post('/integrations', { provider: 'website_form', name: 'Landing page', settings: { sourceId: web, ownerId: 'auto', duplicateStrategy: 'skip' }, fieldMapping: { name: 'full_name', cf_budget: 'budget' } });
     expect(created.status).toBe(201);
     expect(created.body).toMatchObject({ status: 'CONNECTED' });
@@ -1421,7 +1421,7 @@ describe('email delivery', () => {
     expect(bad.status).toBe(201);
     expect(bad.body.status).toBe('ERROR');
     expect(bad.body.lastError).toBeTruthy();
-    expect(bad.body.credentials).toMatchObject({ host: '127.0.0.1', port: 1, hasPassword: false });
+    expect(bad.body.credentials).toMatchObject({ host: '127.0.0.1', port: 1, has_pass: false });
     expect(bad.body.credentials.pass).toBeUndefined();
     expect((await o.post('/integrations', { provider: 'smtp', name: 'Second', credentials: { host: 'x', from: 'y@z.com' } })).status).toBe(409);
     expect((await o.post(`/integrations/${bad.body.id}/send-test`)).status).toBe(400);
@@ -1527,6 +1527,113 @@ describe('super admin and plans', () => {
     // Plans can be retired; the default plan is what new workspaces receive.
     await admin.patch(`/admin/plans/${tiny.body.id}`, { active: false });
     expect((await o.get('/organisation/plan')).body.available.map((p: any) => p.key)).not.toContain('tiny');
+  });
+});
+
+/** Stand-ins for Razorpay and Exotel so the adapters are exercised end to end without real accounts. */
+function providerStub() {
+  const seen: { method: string; url: string; auth: string | undefined; body: string }[] = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      seen.push({ method: req.method!, url: req.url!, auth: req.headers.authorization, body });
+      const ok = (o: unknown) => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(o)); };
+      const rzp = req.headers.authorization === `Basic ${Buffer.from('rzp_test_key:secret-1').toString('base64')}`;
+      const exo = req.headers.authorization === `Basic ${Buffer.from('key-1:token-1').toString('base64')}`;
+      if (req.url!.startsWith('/v1/payments')) { if (!rzp) { res.statusCode = 401; return ok({ error: { description: 'Authentication failed' } }); } return ok({ items: [] }); }
+      if (req.url === '/v1/payment_links') { if (!rzp) { res.statusCode = 401; return ok({ error: { description: 'Authentication failed' } }); } return ok({ id: 'plink_TEST1', short_url: 'https://rzp.io/i/test1', status: 'created' }); }
+      if (req.url === '/v1/Accounts/sid-1.json') { if (!exo) { res.statusCode = 401; return ok({ RestException: { Message: 'Not authenticated' } }); } return ok({ Account: { FriendlyName: 'Test Telecom' } }); }
+      if (req.url === '/v1/Accounts/sid-1/Calls/connect.json') { if (!exo) { res.statusCode = 401; return ok({}); } return ok({ Call: { Sid: 'CA-TEST-1', Status: 'queued' } }); }
+      res.statusCode = 404; ok({ error: 'unknown stub route' });
+    });
+  });
+  return { seen, start: () => new Promise<string>((r) => server.listen(0, '127.0.0.1', () => r(`http://127.0.0.1:${(server.address() as any).port}`))), stop: () => new Promise<void>((r) => server.close(() => r())) };
+}
+
+describe('provider adapters: Razorpay and Exotel', () => {
+  const stub = providerStub();
+  beforeAll(async () => { const base = await stub.start(); process.env.RAZORPAY_API_BASE = base; process.env.EXOTEL_API_BASE = base; });
+  afterAll(async () => { delete process.env.RAZORPAY_API_BASE; delete process.env.EXOTEL_API_BASE; await stub.stop(); });
+
+  it('creates Razorpay payment links and marks payments received from signed webhooks', async () => {
+    const o = await registerOrg('Rzp');
+    const lead = (await o.post('/leads', { name: 'Paying Lead', phone: '9876501234', email: 'pay@example.com' })).body;
+    const pending = (await o.post('/payments', { leadId: lead.id, amount: 2500, status: 'PENDING' })).body;
+    expect((await o.post(`/payments/${pending.id}/link`)).status).toBe(400); // nothing connected
+    const providers = (await o.get('/integrations/providers')).body.providers;
+    expect(providers.map((p: any) => p.key)).toEqual(['website_form', 'smtp', 'razorpay', 'exotel']);
+    expect(providers.find((p: any) => p.key === 'razorpay').needs).toContain('Razorpay account');
+    const bad = await o.post('/integrations', { provider: 'razorpay', name: 'Razorpay', credentials: { keyId: 'rzp_test_key', keySecret: 'wrong', webhookSecret: 'whs' } });
+    expect(bad.body.status).toBe('ERROR');
+    expect(bad.body.lastError).toContain('Authentication failed');
+    expect(bad.body.credentials).toEqual({ keyId: 'rzp_test_key', has_keySecret: true, has_webhookSecret: true });
+    const good = await o.patch(`/integrations/${bad.body.id}`, { credentials: { keySecret: 'secret-1' } });
+    expect(good.body.status).toBe('CONNECTED');
+    expect(good.body.summary).toContain('test mode');
+    expect(good.body.endpointUrl).toContain(`/api/v1/hooks/razorpay/${bad.body.id}`);
+    expect((await o.get('/integrations/connected')).body).toMatchObject({ razorpay: true, exotel: false });
+
+    const linked = await o.post(`/payments/${pending.id}/link`);
+    expect(linked.status).toBe(200);
+    expect(linked.body).toMatchObject({ linkUrl: 'https://rzp.io/i/test1', provider: 'razorpay', providerRef: 'plink_TEST1', method: 'PAYMENT_LINK', status: 'PENDING' });
+    const sent = JSON.parse(stub.seen.find((s) => s.url === '/v1/payment_links')!.body);
+    expect(sent).toMatchObject({ amount: 250000, currency: 'INR', customer: { name: 'Paying Lead', contact: '9876501234', email: 'pay@example.com' }, notes: { paymentId: pending.id } });
+
+    const hook = `/api/v1/hooks/razorpay/${bad.body.id}`;
+    const payload = JSON.stringify({ event: 'payment_link.paid', payload: { payment_link: { entity: { id: 'plink_TEST1' } }, payment: { entity: { id: 'pay_ABC' } } } });
+    const sign = (secret: string) => createHmac('sha256', secret).update(payload).digest('hex');
+    expect((await request(server).post(hook).set('Content-Type', 'application/json').set('X-Razorpay-Signature', sign('nope')).send(payload)).status).toBe(401);
+    const ok = await request(server).post(hook).set('Content-Type', 'application/json').set('X-Razorpay-Signature', sign('whs')).set('X-Razorpay-Event-Id', 'evt_1').send(payload);
+    expect(ok.status).toBe(200);
+    expect(ok.body.result).toBe('Payment marked received');
+    const paid = (await o.get('/payments')).body.items.find((p: any) => p.id === pending.id);
+    expect(paid).toMatchObject({ status: 'PAID', method: 'PAYMENT_LINK', reference: 'pay_ABC' });
+    expect(paid.paidAt).toBeTruthy();
+    const replay = await request(server).post(hook).set('Content-Type', 'application/json').set('X-Razorpay-Signature', sign('whs')).set('X-Razorpay-Event-Id', 'evt_1').send(payload);
+    expect(replay.body.duplicate).toBe(true);
+    expect((await o.get(`/leads/${lead.id}/activities`)).body.map((a: any) => a.type)).toEqual(expect.arrayContaining(['payment_link_created', 'payment_received']));
+    expect((await o.get(`/integrations/${bad.body.id}/events`)).body.items[0]).toMatchObject({ type: 'payment_link.paid', status: 'PROCESSED', leadId: lead.id });
+    expect((await o.post(`/payments/${pending.id}/link`)).status).toBe(400); // already paid
+  });
+
+  it('places click-to-call through Exotel and logs the outcome, duration and recording from its callbacks', async () => {
+    const o = await registerOrg('Exo');
+    const lead = (await o.post('/leads', { name: 'Dial Lead', phone: '9123456780' })).body;
+    expect((await o.post('/calls/click-to-call', { leadId: lead.id })).status).toBe(400); // no phone on the agent profile
+    await o.post('/auth/profile', { name: 'Owner One', phone: '9000011111' });
+    expect((await o.post('/calls/click-to-call', { leadId: lead.id })).body.message).toContain('No telephony provider');
+    const conn = await o.post('/integrations', { provider: 'exotel', name: 'Exotel', credentials: { accountSid: 'sid-1', apiKey: 'key-1', apiToken: 'token-1', subdomain: 'api.in.exotel.com', callerId: '02012345678', record: true } });
+    expect(conn.body.status).toBe('CONNECTED');
+    expect(conn.body.summary).toContain('Test Telecom');
+    expect(conn.body.credentials.has_apiToken).toBe(true);
+    expect(conn.body.credentials.apiToken).toBeUndefined();
+
+    const started = await o.post('/calls/click-to-call', { leadId: lead.id });
+    expect(started.status).toBe(200);
+    expect(started.body).toMatchObject({ status: 'INITIATED', provider: 'exotel', providerRef: 'CA-TEST-1', direction: 'OUTBOUND' });
+    const form = new URLSearchParams(stub.seen.find((s) => s.url.endsWith('/Calls/connect.json'))!.body);
+    expect(form.get('From')).toBe('9000011111');
+    expect(form.get('To')).toBe('9123456780');
+    expect(form.get('CallerId')).toBe('02012345678');
+    expect(form.get('StatusCallback')).toContain(`/api/v1/hooks/exotel/${conn.body.id}`);
+    expect(form.get('CustomField')).toBe(started.body.id);
+
+    const hook = `/api/v1/hooks/exotel/${conn.body.id}`;
+    await request(server).post(hook).send({ CallSid: 'CA-TEST-1', CustomField: started.body.id, Status: 'in-progress' });
+    expect((await o.get(`/calls?leadId=${lead.id}`)).body.items[0].status).toBe('IN_PROGRESS');
+    const done = await request(server).post(hook).send({ CallSid: 'CA-TEST-1', CustomField: started.body.id, Status: 'completed', ConversationDuration: '95', RecordingUrl: 'https://recordings.exotel.com/x.mp3' });
+    expect(done.body.status).toBe('COMPLETED');
+    const logged = (await o.get(`/calls?leadId=${lead.id}`)).body.items[0];
+    expect(logged).toMatchObject({ status: 'COMPLETED', durationSec: 95, recordingUrl: 'https://recordings.exotel.com/x.mp3' });
+    expect((await o.get(`/leads/${lead.id}/activities`)).body.find((a: any) => a.type === 'call_logged').data.via).toBe('exotel');
+    // An incoming call from a known number is logged against the lead and the owner is told.
+    const incoming = await request(server).post(hook).type('form').send({ CallSid: 'CA-IN-1', CallFrom: '09123456780', CallTo: '02012345678', Direction: 'incoming' });
+    expect(incoming.body.lead).toBe(lead.id);
+    expect((await o.get('/notifications')).body.items.map((n: any) => n.title)).toContain('Incoming call from Dial Lead');
+    await request(server).post(hook).type('form').send({ CallSid: 'CA-IN-1', Status: 'completed', Duration: '40' });
+    expect((await o.get(`/calls?leadId=${lead.id}&direction=INBOUND`)).body.items[0]).toMatchObject({ status: 'COMPLETED', durationSec: 40 });
+    expect((await request(server).post('/api/v1/hooks/exotel/nope').send({ CallSid: 'x' })).status).toBe(404);
   });
 });
 

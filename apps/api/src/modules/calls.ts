@@ -1,8 +1,10 @@
-import { BadRequestException, Body, ConflictException, Controller, Delete, Get, NotFoundException, Param, Patch, Post, Query } from '@nestjs/common';
+import { BadRequestException, Body, ConflictException, Controller, Delete, Get, HttpCode, NotFoundException, Param, Patch, Post, Query } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { Context, Ctx, Perm, PrismaService, audit, pageSchema, parse } from '../common/core';
 import { LeadsService } from './leads';
+import { IntegrationsController } from './integrations';
+import { connectCall, exotelCredentials } from './providers/exotel';
 import { OutboxService } from './webhooks';
 
 export const DEFAULT_DISPOSITIONS = ['Interested', 'Not interested', 'Call back later', 'No answer', 'Wrong number', 'Already purchased'];
@@ -107,6 +109,28 @@ export class CallsController {
     });
     this.outbox.kick(ctx.orgId, events);
     return call;
+  }
+
+  /** Starts a call through the connected telephony provider: the agent's phone rings first, then the lead's. */
+  @Perm('leads.view') @Post('calls/click-to-call') @HttpCode(200)
+  async clickToCall(@Context() ctx: Ctx, @Body() body: unknown) {
+    const { leadId } = parse(z.object({ leadId: z.string() }), body);
+    const lead = await this.prisma.lead.findFirst({ where: { id: leadId, organisationId: ctx.orgId, AND: [await this.leads.scope(ctx)] }, select: { id: true, name: true, phone: true } });
+    if (!lead) throw new BadRequestException('Lead not found');
+    if (!lead.phone) throw new BadRequestException('This lead has no phone number');
+    const me = await this.prisma.user.findUniqueOrThrow({ where: { id: ctx.userId }, select: { phone: true } });
+    if (!me.phone) throw new BadRequestException('Add your phone number under Settings → My account so the provider can ring you first');
+    const tel = await IntegrationsController.connected(this.prisma, ctx.orgId, 'exotel');
+    if (!tel) throw new BadRequestException('No telephony provider is connected (Settings → Integrations)');
+    const creds = exotelCredentials.parse(tel.credentials);
+    const call = await this.prisma.call.create({ data: { organisationId: ctx.orgId, leadId: lead.id, userId: ctx.userId, direction: 'OUTBOUND', status: 'INITIATED', phone: lead.phone, provider: 'exotel' }, include });
+    try {
+      const r = await connectCall(creds, { agentPhone: me.phone, leadPhone: lead.phone, statusCallback: `${(process.env.API_PUBLIC_URL ?? 'http://localhost:4000').replace(/\/$/, '')}/api/v1/hooks/exotel/${tel.id}`, customField: call.id });
+      return this.prisma.call.update({ where: { id: call.id }, data: { providerRef: r.sid || null }, include });
+    } catch (e) {
+      await this.prisma.call.update({ where: { id: call.id }, data: { status: 'FAILED', notes: (e as Error).message.slice(0, 500) } });
+      throw new BadRequestException((e as Error).message);
+    }
   }
 
   @Perm('leads.view') @Patch('calls/:id')

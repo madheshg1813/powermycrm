@@ -1,8 +1,10 @@
-import { BadRequestException, Body, Controller, Delete, Get, NotFoundException, Param, Patch, Post, Query } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, HttpCode, NotFoundException, Param, Patch, Post, Query } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { Context, Ctx, Perm, PrismaService, audit, pageSchema, parse } from '../common/core';
 import { LeadsService, serializeOpp, serializePayment } from './leads';
+import { IntegrationsController } from './integrations';
+import { createPaymentLink, razorpayCredentials } from './providers/razorpay';
 import { OutboxService } from './webhooks';
 
 const text = (max: number) => z.string().trim().max(max).transform((v) => v || null).nullable().optional();
@@ -332,6 +334,28 @@ export class PaymentsController {
       return u;
     });
     this.outbox.kick(ctx.orgId, events);
+    return serializePayment(updated);
+  }
+
+  /** Creates a Razorpay payment link for an expected payment and stores it on the record. The webhook marks it received. */
+  @Perm('payments.manage') @Post(':id/link') @HttpCode(200)
+  async link(@Context() ctx: Ctx, @Param('id') id: string) {
+    const p = await this.find(ctx, id);
+    if (p.status !== 'PENDING') throw new BadRequestException('Only an expected payment can have a payment link');
+    const rz = await IntegrationsController.connected(this.prisma, ctx.orgId, 'razorpay');
+    if (!rz) throw new BadRequestException('Connect Razorpay under Settings → Integrations first');
+    const org = await this.prisma.organisation.findUniqueOrThrow({ where: { id: ctx.orgId }, select: { name: true } });
+    const link = await createPaymentLink(razorpayCredentials.parse(rz.credentials), {
+      amount: Number(p.amount), currency: p.currency, description: p.opportunity ? `${p.opportunity.name} — ${org.name}` : `Payment to ${org.name}`, reference: p.id,
+      customer: { name: p.lead.name, contact: p.lead.phone, email: await this.prisma.lead.findUnique({ where: { id: p.leadId }, select: { email: true } }).then((l) => l?.email ?? null) },
+      notes: { paymentId: p.id, organisationId: ctx.orgId, leadId: p.leadId },
+    }).catch((e) => { throw new BadRequestException((e as Error).message); });
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const u = await tx.payment.update({ where: { id }, data: { provider: 'razorpay', providerRef: link.id, linkUrl: link.url, method: 'PAYMENT_LINK' }, include: payInclude });
+      await tx.leadActivity.create({ data: { organisationId: ctx.orgId, leadId: p.leadId, actorId: ctx.userId, type: 'payment_link_created', data: { id, amount: Number(p.amount), currency: p.currency, url: link.url } } });
+      await audit(tx, ctx, 'payment.link_created', 'payment', id, { provider: 'razorpay', providerRef: link.id });
+      return u;
+    });
     return serializePayment(updated);
   }
 

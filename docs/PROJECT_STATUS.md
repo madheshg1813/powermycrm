@@ -19,8 +19,8 @@ PowerMyCRM is **not** at feature parity with TeleCRM and is not production-ready
 | 5 | Dashboard and reports | Dashboard and reports module completed (session 3). No custom report builder, Excel export or scheduled reports |
 | 6 | Job queue and outbox | Completed: pg-boss on PostgreSQL in-process, outbox events, signed outbound webhooks with retries and a delivery log |
 | 7 | Integration framework | Framework completed (Integration, IntegrationEvent, encrypted credentials, inbound worker, event log with retry). Providers: website forms and the API-key lead-capture API. Every third-party provider is awaiting credentials |
-| 11 | Payments | Manual payment records (expected, received, failed, refunded), totals, Payments page. No payment gateway yet |
-| 8 | Calling | Call log (manual logging with outcomes, duration, notes, callback scheduling; click-to-call opens the phone app and the log dialog). Telephony providers, recordings and live dialling need a provider account |
+| 11 | Payments | Payment records, totals, Payments page, Razorpay payment links marked received from signed webhooks. Needs a Razorpay account |
+| 8 | Calling | Call log with outcomes, duration, notes and callbacks; click-to-call through Exotel (rings the agent, then the lead; outcome, duration and recording logged from Exotel callbacks; incoming calls logged and announced). Needs an Exotel account |
 | 10 | Automation | Completed: trigger + conditions + ordered steps (assign, stage, label, list, follow-up, notify, email, webhook, update field, archive, wait) with per-run logs and "run on this lead" |
 | 14 | Super admin, plans | Completed without billing: platform admin area (workspaces, suspension, plan changes, health), plan catalogue with limits enforced on users, leads, automations, storage and webhooks |
 | 16 | Mobile | Installable PWA (manifest, icons, offline page, service worker in production builds) on top of the responsive layouts. No native app |
@@ -48,6 +48,7 @@ PowerMyCRM is **not** at feature parity with TeleCRM and is not production-ready
 - Plans and limits: every workspace has a plan (Free by default) with limits on users, leads, automations, file storage and webhook endpoints; exceeding one returns a clear "upgrade" message (`code: PLAN_LIMIT`). Settings → Organisation shows usage against the plan.
 - Platform admin (`/admin`, for emails in `SUPER_ADMIN_EMAILS`): overview with 24-hour failure counts, every workspace with owner, plan, users, leads and last activity, search, suspend/reactivate (signs everyone out at once), change plan, and the plan catalogue (create, edit limits and prices, retire, choose the default).
 - Installable on phones and desktops as a PWA (Add to Home Screen); pages always load from the network and an offline page explains when there is no connection.
+- Connected services (Settings → Integrations): a provider registry where each provider declares its credentials and a connection test against the real service; status is "connected" only after that test passes. Built: Razorpay (payment links; webhook marks payments received), Exotel (click-to-call, call callbacks, incoming calls), SMTP email, website forms.
 - Dashboard with live figures; global search; in-app notifications; audit log (API).
 - Settings: profile, password, devices, organisation, stages, pipelines, sources, labels.
 
@@ -68,7 +69,7 @@ workspace login is recorded in `.env.local` (git-ignored).
 ## Next tasks, in order
 
 1. Done in session 3: static lead lists; reports; custom-field filters, sort and columns; deals with forecast; payments; job queue, outbox, webhooks, website forms, the public API, SMTP email delivery and email verification.
-2. Provider adapters that need the customer's accounts: Razorpay payment links, WhatsApp Cloud API, SMS gateway, telephony (Exotel-style click-to-call and call webhooks), IndiaMART pull, Justdial push, Meta lead ads.
+2. Remaining provider adapters: WhatsApp Cloud API inbox and templates, SMS gateway, IndiaMART pull, Justdial push, Meta lead ads. (Razorpay and Exotel are done.)
 3. Conditional assignment rules; S3 storage adapter for production.
 4. Won/lost reasons, forecasting, stage SLA and ageing.
 5. Calendar view, recurring tasks, reminder scheduler (needs the job queue).

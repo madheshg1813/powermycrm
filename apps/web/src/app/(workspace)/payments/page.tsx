@@ -39,7 +39,7 @@ function PaymentStatusPill({ p }: { p: Payment }) {
 
 export default function PaymentsPage() {
   const { me, can } = useAuth();
-  const { members } = useRefs();
+  const { members, connected } = useRefs();
   const { toast, confirm } = useUi();
   const [status, setStatus] = useState('');
   const [method, setMethod] = useState('');
@@ -62,6 +62,10 @@ export default function PaymentsPage() {
   const t = list.data?.totals;
   const sortBy = (key: string) => setSort((s) => ({ by: key, dir: s.by === key && s.dir === 'desc' ? 'asc' : 'desc' }));
 
+  async function createLink(p: Payment) {
+    try { const r = await api<Payment>(`/payments/${p.id}/link`, { body: {} }); toast('Payment link created'); if (r.linkUrl) { try { await navigator.clipboard.writeText(r.linkUrl); toast('Link copied to clipboard'); } catch { /* clipboard unavailable */ } } list.reload(); }
+    catch (e) { toast((e as Error).message, 'error'); }
+  }
   async function setPaymentStatus(p: Payment, next: 'PAID' | 'REFUNDED') {
     if (next === 'REFUNDED' && !(await confirm({ title: `Refund ${money(p.amount, cur)}?`, text: `The payment from ${p.lead?.name} is marked as refunded. The record is kept.`, confirmLabel: 'Mark refunded', danger: true }))) return;
     try { await api(`/payments/${p.id}`, { method: 'PATCH', body: { status: next } }); toast(next === 'PAID' ? 'Payment marked as received' : 'Payment marked as refunded'); list.reload(); }
@@ -123,6 +127,8 @@ export default function PaymentsPage() {
                       <td className="hidden text-ink-muted sm:table-cell">{p.status === 'PAID' || p.status === 'REFUNDED' ? fmtDate(p.paidAt) : p.dueAt ? `Due ${fmtDate(p.dueAt)}` : '—'}</td>
                       <td className="hidden xl:table-cell">{p.opportunity?.name ?? <span className="text-ink-faint">&mdash;</span>}</td>
                       <td className="text-right">
+                        {p.linkUrl && <a className="btn-ghost btn-sm mr-1" href={p.linkUrl} target="_blank" rel="noopener noreferrer">Link</a>}
+                        {can('payments.manage') && p.status === 'PENDING' && connected.razorpay && !p.linkUrl && <button className="btn-ghost btn-sm mr-1" onClick={() => createLink(p)}>Payment link</button>}
                         {can('payments.manage') && p.status === 'PENDING' && <button className="btn-ghost btn-sm" onClick={() => setPaymentStatus(p, 'PAID')}>Mark received</button>}
                         {can('payments.manage') && p.status === 'PAID' && <button className="btn-ghost btn-sm" onClick={() => setPaymentStatus(p, 'REFUNDED')}>Refund</button>}
                       </td>

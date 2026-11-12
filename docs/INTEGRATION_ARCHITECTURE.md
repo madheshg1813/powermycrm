@@ -56,8 +56,9 @@ provider. There is no code path that sets it otherwise.
 | Google Sheets, Google Ads lead forms | OAuth / webhook key | Google Cloud OAuth client | Awaiting platform credentials |
 | IndiaMART | API key | CRM key (pull API) | Awaiting credentials |
 | Justdial, Sulekha, TradeIndia, 99acres, MagicBricks, Housing, Shiksha | Push webhook or email parse | Portal-side configuration by each customer | Awaiting credentials |
-| Knowlarity, Exotel, MyOperator, MCube, CallerDesk, TeleCMI, Maqsam | API key + webhooks | Account, virtual number | Awaiting credentials |
-| Razorpay | Key + webhook secret | Key id, secret, webhook secret | Awaiting credentials |
+| Exotel | API key + token, ExoPhone | Account SID, API key/token, region, ExoPhone | **Built** (click-to-call, status callbacks, incoming calls); awaiting the customer's account |
+| Knowlarity, MyOperator, MCube, CallerDesk, TeleCMI, Maqsam | API key + webhooks | Account, virtual number | Awaiting credentials |
+| Razorpay | Key + webhook secret | Key id, secret, webhook secret | **Built** (payment links, paid webhook); awaiting the customer's keys |
 | SMS gateway | API key | DLT entity id, sender id, templates | Awaiting credentials |
 | Email | SMTP / OAuth | SMTP credentials or Google/Microsoft OAuth | Awaiting credentials |
 | Shopify, WooCommerce | OAuth / keys | Store credentials | Awaiting credentials |

@@ -1,6 +1,6 @@
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
-import { json, urlencoded } from 'express';
+import { NestExpressApplication } from '@nestjs/platform-express';
 
 try {
   process.loadEnvFile();
@@ -13,9 +13,10 @@ import { jwtSecret } from './common/core';
 
 async function bootstrap() {
   jwtSecret(); // fail fast on missing configuration
-  const app = await NestFactory.create(AppModule, { bodyParser: false });
-  app.use(json({ limit: '5mb' }));
-  app.use(urlencoded({ extended: false, limit: '1mb' }));
+  // rawBody keeps the exact bytes so provider webhooks (Razorpay, Meta) can be signature-checked.
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { bodyParser: false, rawBody: true });
+  app.useBodyParser('json', { limit: '5mb' });
+  app.useBodyParser('urlencoded', { extended: false, limit: '1mb' });
   configureApp(app);
   app.enableShutdownHooks();
   const port = Number(process.env.PORT ?? 4000);

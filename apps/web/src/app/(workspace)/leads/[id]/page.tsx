@@ -63,7 +63,7 @@ export default function LeadDetailPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const { me, can } = useAuth();
-  const { pipelines, members, fields, lists, reload: reloadRefs } = useRefs();
+  const { pipelines, members, fields, lists, connected, reload: reloadRefs } = useRefs();
   const { toast, confirm } = useUi();
   const lead = useApi<Detail>(`/leads/${id}`);
   const acts = useApi<Activity[]>(`/leads/${id}/activities`);
@@ -200,6 +200,15 @@ export default function LeadDetailPage() {
     catch (e) { toast((e as Error).message, 'error'); }
   }
 
+  async function paymentLink(p: Payment) {
+    try { const r = await api<Payment>(`/payments/${p.id}/link`, { body: {} }); toast('Payment link created'); if (r.linkUrl) { try { await navigator.clipboard.writeText(r.linkUrl); toast('Link copied to clipboard'); } catch { /* clipboard unavailable */ } } reload(); }
+    catch (e) { toast((e as Error).message, 'error'); }
+  }
+  async function callViaProvider() {
+    try { await api('/calls/click-to-call', { body: { leadId: id } }); toast('Calling: your phone rings first, then the lead'); setTimeout(() => calls.reload(), 3000); }
+    catch (e) { toast((e as Error).message, 'error'); }
+  }
+
   async function deleteCall(c: Call) {
     if (!(await confirm({ title: 'Delete this call record?', text: 'The timeline entry stays; the call itself is removed from reports.', confirmLabel: 'Delete', danger: true }))) return;
     try { await api(`/calls/${c.id}`, { method: 'DELETE' }); toast('Call deleted'); reload(); }
@@ -247,6 +256,7 @@ export default function LeadDetailPage() {
             {l.archivedAt && <span className="pill-amber">Archived</span>}
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            {l.phone && connected.exotel && !l.archivedAt && <button className="btn-ghost" onClick={callViaProvider} title="Rings your phone first, then the lead; logged automatically"><PhoneCall className="h-4 w-4" />Call via Exotel</button>}
             {l.phone && <a className="btn-ghost" href={`tel:${l.phone.replace(/[^\d+]/g, '')}`} title="Opens your device's phone app and logs the call" onClick={() => { if (!l.archivedAt) { setEditCall(null); setTimeout(() => setCallOpen(true), 400); } }}><Phone className="h-4 w-4" />Call</a>}
             {l.email && <a className="btn-ghost" href={`mailto:${l.email}`} title="Opens your email app"><Mail className="h-4 w-4" />Email</a>}
             {canEdit && <button className="btn-ghost" onClick={() => setEditOpen(true)}><Pencil className="h-4 w-4" />Edit</button>}
@@ -416,6 +426,7 @@ export default function LeadDetailPage() {
                         <p className="font-medium">{c.direction === 'INBOUND' ? 'Inbound' : 'Outbound'} · {CALL_STATUS[c.status]}{c.disposition && <span className="pill-muted ml-2">{c.disposition.name}</span>}</p>
                         <p className="mt-0.5 flex flex-wrap gap-x-2 text-[13px] text-ink-muted"><span>{fmtDateTime(c.startedAt)}</span>{c.durationSec !== null && c.status === 'COMPLETED' && <span>{Math.floor(c.durationSec / 60)}m {c.durationSec % 60}s</span>}<span>{c.user?.name}</span>{c.phone && <span>{c.phone}</span>}</p>
                         {c.notes && <p className="mt-1 whitespace-pre-wrap text-[13px] text-ink-soft">{c.notes}</p>}
+                        {c.recordingUrl && <a className="mt-1 inline-block text-[13px] font-medium underline" href={c.recordingUrl} target="_blank" rel="noopener noreferrer">Recording</a>}
                       </div>
                       {(c.userId === me?.user.id || can('tasks.manage')) && <span className="flex gap-1"><button className="btn-icon" onClick={() => { setEditCall(c); setCallOpen(true); }} aria-label="Edit call"><Pencil className="h-4 w-4" /></button><button className="btn-icon" onClick={() => deleteCall(c)} aria-label="Delete call"><Trash2 className="h-4 w-4" /></button></span>}
                     </li>
@@ -501,6 +512,8 @@ export default function LeadDetailPage() {
                         </div>
                         {can('payments.manage') && (
                           <span className="flex flex-wrap gap-1.5">
+                            {p.status === 'PENDING' && connected.razorpay && !p.linkUrl && <button className="btn-ghost btn-sm" onClick={() => paymentLink(p)}>Create payment link</button>}
+                            {p.linkUrl && <a className="btn-ghost btn-sm" href={p.linkUrl} target="_blank" rel="noopener noreferrer">Open link</a>}
                             {p.status === 'PENDING' && <button className="btn-ghost btn-sm" onClick={() => patchPayment(p, { status: 'PAID' }, 'Payment marked as received')}>Mark received</button>}
                             {p.status === 'PAID' && <button className="btn-ghost btn-sm" onClick={async () => { if (await confirm({ title: `Refund ${money(p.amount, p.currency)}?`, text: 'The payment is marked as refunded. The record is kept.', confirmLabel: 'Mark refunded', danger: true })) patchPayment(p, { status: 'REFUNDED' }, 'Payment marked as refunded'); }}>Refund</button>}
                             {p.status !== 'REFUNDED' && <button className="btn-icon" onClick={() => { setEditPay(p); setPayOpen(true); }} aria-label="Edit payment"><Pencil className="h-4 w-4" /></button>}

@@ -2,43 +2,19 @@ import { BadRequestException, Body, Controller, Delete, Get, Headers, HttpCode, 
 import { Prisma } from '@prisma/client';
 import { Request, Response } from 'express';
 import { z } from 'zod';
-import { Context, Ctx, Perm, PrismaService, Public, audit, pageSchema, parse, randomToken, sha256 } from '../common/core';
+import { Context, Ctx, Perm, PrismaService, Public, audit, normalizePhone, pageSchema, parse, randomToken, sha256 } from '../common/core';
+import { mapExotelStatus } from './providers/exotel';
+import { razorpayCredentials, verifyRazorpayWebhook } from './providers/razorpay';
+import { OutboxService } from './webhooks';
 import { ConflictException } from '@nestjs/common';
 import { QueueService, decrypt, encrypt, safeEqual } from '../common/queue';
-import { EmailService, layout, smtpSchema } from './email';
+import { EmailService, layout } from './email';
+import { PROVIDER_KEYS, PROVIDERS as REGISTRY, providerByKey } from './providers/registry';
 import { IngestOptions, LeadsService } from './leads';
 
-// ---- Provider registry ---------------------------------------------------------
-// Only providers that work end to end without third-party credentials are listed. Every other provider in
-// docs/INTEGRATION_ARCHITECTURE.md is "awaiting credentials" and is not shown as connectable.
-
-export const PROVIDERS = [
-  {
-    key: 'website_form',
-    name: 'Website form',
-    category: 'lead_source',
-    auth: 'webhook_only',
-    description: 'Post your website or landing-page form to a PowerMyCRM endpoint. Each submission becomes a lead, de-duplicated and auto-assigned by your rules.',
-    credentialSchema: [] as CredentialField[],
-  },
-  {
-    key: 'smtp',
-    name: 'Email (SMTP)',
-    category: 'messaging',
-    auth: 'credentials',
-    description: 'Send invitations, password resets and verification emails from your own mail account or transactional email service (Gmail with an app password, Microsoft 365, Amazon SES, SendGrid, Zoho…).',
-    credentialSchema: [
-      { key: 'host', label: 'SMTP host', type: 'text', placeholder: 'smtp.gmail.com' },
-      { key: 'port', label: 'Port', type: 'number', placeholder: '587' },
-      { key: 'secure', label: 'Use implicit TLS (port 465)', type: 'boolean' },
-      { key: 'user', label: 'Username', type: 'text', placeholder: 'you@yourcompany.com' },
-      { key: 'pass', label: 'Password or app password', type: 'password' },
-      { key: 'from', label: 'From address', type: 'text', placeholder: 'Sales Team <sales@yourcompany.com>' },
-    ] as CredentialField[],
-  },
-] as const;
-export type CredentialField = { key: string; label: string; type: 'text' | 'number' | 'boolean' | 'password'; placeholder?: string };
-type ProviderKey = (typeof PROVIDERS)[number]['key'];
+// ---- Provider registry lives in ./providers; secrets are masked on the way out, tests run against the real service. ----
+export { PROVIDERS } from './providers/registry';
+export type { CredentialField } from './providers/index';
 
 /** CRM fields a website form can fill. `cf_<key>` entries are added per workspace from its custom fields. */
 export const MAPPABLE_FIELDS = ['name', 'phone', 'email', 'company', 'city', 'message', 'source'] as const;
@@ -51,23 +27,21 @@ const settingsSchema = z.object({
   redirectUrl: z.string().trim().url().max(500).nullable().default(null),
 });
 const integrationSchema = z.object({
-  provider: z.enum(['website_form', 'smtp']),
+  provider: z.enum(PROVIDER_KEYS),
   name: z.string().trim().min(1, 'Name the integration').max(80),
   settings: settingsSchema.default({}),
   fieldMapping: z.record(z.string(), z.string().trim().max(80)).default({}),
   credentials: z.record(z.string(), z.any()).optional(),
 });
-/** Validates provider credentials and returns what is stored (encrypted). */
-function cleanCredentials(provider: ProviderKey, raw: unknown, existing?: Record<string, unknown>): Record<string, unknown> {
-  if (provider === 'smtp') {
-    const merged = { ...(existing ?? {}), ...((raw ?? {}) as Record<string, unknown>) };
-    // A blank password on edit keeps the stored one.
-    if (existing && !(raw as Record<string, unknown>)?.pass) merged.pass = existing.pass;
-    const r = smtpSchema.safeParse(merged);
-    if (!r.success) throw new BadRequestException({ message: r.error.issues[0]?.message ?? 'Check the SMTP details', errors: r.error.issues.map((i) => ({ path: `credentials.${i.path.join('.')}`, message: i.message })) });
-    return r.data;
-  }
-  return {};
+/** Validates provider credentials with the provider's schema and returns what is stored (encrypted). Blank secrets on edit keep the stored value. */
+function cleanCredentials(provider: string, raw: unknown, existing?: Record<string, unknown>): Record<string, unknown> {
+  const def = providerByKey(provider);
+  if (!def || def.auth !== 'credentials') return {};
+  const merged: Record<string, unknown> = { ...(existing ?? {}), ...((raw ?? {}) as Record<string, unknown>) };
+  for (const k of def.secretKeys) if (existing && !(raw as Record<string, unknown>)?.[k]) merged[k] = existing[k];
+  const r = def.credentials.safeParse(merged);
+  if (!r.success) throw new BadRequestException({ message: r.error.issues[0]?.message ?? `Check the ${def.name} details`, errors: r.error.issues.map((i) => ({ path: `credentials.${i.path.join('.')}`, message: i.message })) });
+  return r.data as Record<string, unknown>;
 }
 const publicUrl = () => (process.env.API_PUBLIC_URL ?? 'http://localhost:4000').replace(/\/$/, '');
 
@@ -93,6 +67,7 @@ export class IntegrationsController implements OnModuleInit {
     private readonly queue: QueueService,
     private readonly leads: LeadsService,
     private readonly email: EmailService,
+    private readonly outbox: OutboxService,
   ) {}
 
   onModuleInit() {
@@ -163,6 +138,109 @@ export class IntegrationsController implements OnModuleInit {
     return res.status(202).json({ ok: true, id: event.id });
   }
 
+  /**
+   * Razorpay webhook: signed with HMAC-SHA256 of the raw body under the integration's webhook secret.
+   * payment_link.paid marks the matching payment received; payment.failed is recorded on the event log.
+   */
+  @Public() @Post('hooks/razorpay/:id') @HttpCode(200)
+  async razorpayHook(@Param('id') id: string, @Body() body: any, @Headers('x-razorpay-signature') signature: string | undefined, @Headers('x-razorpay-event-id') eventId: string | undefined, @Req() req: Request & { rawBody?: Buffer }) {
+    const integration = await this.prisma.integration.findFirst({ where: { id, provider: 'razorpay' } });
+    if (!integration || integration.status !== 'CONNECTED' || !integration.credentials) throw new NotFoundException('Unknown integration');
+    const creds = razorpayCredentials.parse(JSON.parse(decrypt(integration.credentials)));
+    if (!req.rawBody || !verifyRazorpayWebhook(req.rawBody, signature, creds.webhookSecret)) throw new UnauthorizedException('Invalid webhook signature');
+    const type = String(body?.event ?? 'unknown');
+    const externalId = eventId ? `rzp:${eventId}` : null;
+    let event;
+    try {
+      event = await this.prisma.integrationEvent.create({ data: { organisationId: integration.organisationId, integrationId: integration.id, direction: 'IN', externalId, type, payload: body as Prisma.InputJsonObject, status: 'PENDING' } });
+    } catch (e) {
+      if ((e as Prisma.PrismaClientKnownRequestError).code === 'P2002') return { ok: true, duplicate: true };
+      throw e;
+    }
+    let result = 'Ignored event type';
+    let leadId: string | null = null;
+    try {
+      if (type === 'payment_link.paid' || type === 'payment.captured') {
+        const linkId = body?.payload?.payment_link?.entity?.id ?? body?.payload?.payment?.entity?.notes?.paymentLinkId;
+        const paymentRef = body?.payload?.payment?.entity?.id ?? null;
+        const payment = linkId ? await this.prisma.payment.findFirst({ where: { organisationId: integration.organisationId, provider: 'razorpay', providerRef: String(linkId) } }) : null;
+        if (!payment) result = 'No payment matches this link';
+        else if (payment.status === 'PAID') result = 'Payment was already marked received';
+        else {
+          const events: string[] = [];
+          const updated = await this.prisma.$transaction(async (tx) => {
+            const u = await tx.payment.update({ where: { id: payment.id }, data: { status: 'PAID', paidAt: new Date(), method: 'PAYMENT_LINK', reference: paymentRef ? String(paymentRef) : payment.reference } });
+            await tx.leadActivity.create({ data: { organisationId: integration.organisationId, leadId: payment.leadId, actorId: null, type: 'payment_received', data: { id: payment.id, amount: Number(payment.amount), currency: payment.currency, method: 'PAYMENT_LINK', reference: paymentRef ?? null, via: 'razorpay' } } });
+            await tx.lead.update({ where: { id: payment.leadId }, data: { lastActivityAt: new Date() } });
+            events.push(await this.outbox.emit(tx, integration.organisationId, 'payment.received', { payment: { ...u, amount: Number(u.amount) }, via: 'razorpay' }));
+            return u;
+          });
+          this.outbox.kick(integration.organisationId, events);
+          leadId = updated.leadId;
+          result = 'Payment marked received';
+        }
+      } else if (type === 'payment.failed') {
+        result = `Payment attempt failed: ${body?.payload?.payment?.entity?.error_description ?? 'no reason given'}`;
+      }
+      await this.prisma.integrationEvent.update({ where: { id: event.id }, data: { status: type === 'payment_link.paid' || type === 'payment.captured' ? (leadId ? 'PROCESSED' : 'SKIPPED') : 'SKIPPED', leadId, error: leadId ? null : result, processedAt: new Date(), attempts: 1 } });
+      await this.prisma.integration.update({ where: { id: integration.id }, data: { lastEventAt: new Date() } });
+    } catch (e) {
+      await this.prisma.integrationEvent.update({ where: { id: event.id }, data: { status: 'FAILED', error: (e as Error).message.slice(0, 300), attempts: 1 } });
+      throw e;
+    }
+    return { ok: true, result };
+  }
+
+  /**
+   * Exotel callbacks: the terminal StatusCallback of a click-to-call (identified by CustomField = our call id)
+   * and the passthru of an incoming call. Exotel does not sign callbacks; the integration id in the path is the shared secret.
+   */
+  @Public() @Post('hooks/exotel/:id') @HttpCode(200)
+  async exotelHook(@Param('id') id: string, @Body() body: Record<string, any>, @Query() query: Record<string, any>) {
+    const integration = await this.prisma.integration.findFirst({ where: { id, provider: 'exotel' } });
+    if (!integration || integration.status !== 'CONNECTED') throw new NotFoundException('Unknown integration');
+    const p = { ...(query ?? {}), ...(body ?? {}) };
+    const sid = String(p.CallSid ?? p.Sid ?? '');
+    const customField = String(p.CustomField ?? '');
+    const org = integration.organisationId;
+    const existing = (customField && (await this.prisma.call.findFirst({ where: { id: customField, organisationId: org } }))) || (sid && (await this.prisma.call.findFirst({ where: { organisationId: org, provider: 'exotel', providerRef: sid } }))) || null;
+    const terminal = p.Status !== undefined && !['in-progress', 'ringing', 'queued'].includes(String(p.Status).toLowerCase());
+    const duration = p.ConversationDuration ?? p.Duration;
+    const events: string[] = [];
+    if (existing) {
+      const data: Prisma.CallUncheckedUpdateInput = { providerRef: existing.providerRef ?? (sid || null), recordingUrl: p.RecordingUrl ? String(p.RecordingUrl) : existing.recordingUrl };
+      if (terminal) { data.status = mapExotelStatus(String(p.Status)); data.durationSec = duration !== undefined && duration !== '' ? Number(duration) : existing.durationSec; }
+      else if (existing.status === 'INITIATED') data.status = 'IN_PROGRESS';
+      const call = await this.prisma.$transaction(async (tx) => {
+        const c = await tx.call.update({ where: { id: existing.id }, data });
+        if (terminal && c.leadId) {
+          await tx.leadActivity.create({ data: { organisationId: org, leadId: c.leadId, actorId: c.userId, type: 'call_logged', data: { id: c.id, direction: c.direction, status: c.status, durationSec: c.durationSec, recordingUrl: c.recordingUrl, via: 'exotel' } } });
+          await tx.lead.update({ where: { id: c.leadId }, data: { lastActivityAt: new Date() } });
+          events.push(await this.outbox.emit(tx, org, 'call.logged', { call: { id: c.id, direction: c.direction, status: c.status, durationSec: c.durationSec, userId: c.userId, recordingUrl: c.recordingUrl }, lead: { id: c.leadId } }));
+        }
+        return c;
+      });
+      this.outbox.kick(org, events);
+      return { ok: true, callId: call.id, status: call.status };
+    }
+    // Unknown sid: an incoming call on the ExoPhone.
+    const from = String(p.CallFrom ?? p.From ?? '');
+    const normalized = normalizePhone(from);
+    const lead = normalized ? await this.prisma.lead.findFirst({ where: { organisationId: org, phoneNormalized: normalized, archivedAt: null }, orderBy: { createdAt: 'desc' } }) : null;
+    const owner = lead?.ownerId ?? (await this.prisma.membership.findFirst({ where: { organisationId: org, status: 'ACTIVE', role: { systemKey: 'owner' } } }))?.userId;
+    if (!owner) return { ok: true, ignored: true };
+    const call = await this.prisma.$transaction(async (tx) => {
+      const c = await tx.call.create({ data: { organisationId: org, leadId: lead?.id ?? null, userId: owner, direction: 'INBOUND', status: terminal ? mapExotelStatus(String(p.Status)) : 'IN_PROGRESS', phone: from || null, durationSec: terminal && duration !== undefined ? Number(duration) : null, provider: 'exotel', providerRef: sid || null, recordingUrl: p.RecordingUrl ? String(p.RecordingUrl) : null } });
+      await tx.notification.create({ data: { organisationId: org, userId: owner, type: 'call.incoming', title: `Incoming call from ${lead?.name ?? (from || 'unknown number')}`, link: lead ? `/leads/${lead.id}?tab=calls` : '/leads' } });
+      if (lead) {
+        await tx.leadActivity.create({ data: { organisationId: org, leadId: lead.id, actorId: null, type: 'call_logged', data: { id: c.id, direction: 'INBOUND', status: c.status, durationSec: c.durationSec, via: 'exotel' } } });
+        await tx.lead.update({ where: { id: lead.id }, data: { lastActivityAt: new Date() } });
+      }
+      return c;
+    });
+    return { ok: true, callId: call.id, lead: lead?.id ?? null };
+  }
+
   // ---- Admin ----------------------------------------------------------------------------
 
   private async find(ctx: Ctx, id: string) {
@@ -172,29 +250,38 @@ export class IntegrationsController implements OnModuleInit {
   }
 
   private present(i: { id: string; provider: string; name: string; status: string; settings: unknown; fieldMapping: unknown; credentials: string | null; lastError: string | null; lastEventAt: Date | null; createdAt: Date }) {
+    const def = providerByKey(i.provider);
     const creds = i.credentials ? (JSON.parse(decrypt(i.credentials)) as Record<string, unknown>) : null;
-    // Secrets never leave the server: forms get their token (it is embedded in public HTML anyway); SMTP gets everything but the password.
+    // Secrets never leave the server. A form token is embedded in public HTML anyway, so forms get theirs back.
     const token = i.provider === 'website_form' && creds ? String(creds.token) : null;
-    const credentials = i.provider === 'smtp' && creds ? { host: creds.host, port: creds.port, secure: creds.secure, user: creds.user, from: creds.from, hasPassword: !!creds.pass } : null;
+    const credentials = def?.auth === 'credentials' && creds
+      ? Object.fromEntries(Object.entries(creds).filter(([k]) => !def.secretKeys.includes(k)).concat(def.secretKeys.map((k) => [`has_${k}`, !!creds[k]])))
+      : null;
     return {
       id: i.id, provider: i.provider, name: i.name, status: i.status, settings: i.settings, fieldMapping: i.fieldMapping, lastError: i.lastError, lastEventAt: i.lastEventAt, createdAt: i.createdAt,
       token, credentials,
-      endpointUrl: i.provider === 'website_form' ? `${publicUrl()}/api/v1/hooks/website_form/${i.id}` : null,
+      endpointUrl: i.provider === 'website_form' ? `${publicUrl()}/api/v1/hooks/website_form/${i.id}` : def?.webhook ? `${publicUrl()}/api/v1/hooks/${def.webhook.path}/${i.id}` : null,
     };
   }
 
-  /** Runs the provider's connection test against the real service and records the outcome. */
+  /** Runs the provider's connection test against the real service and records the outcome. Returns the row plus the test summary. */
   private async testConnection(i: { id: string; provider: string; credentials: string | null }) {
+    const def = providerByKey(i.provider);
     try {
-      if (i.provider === 'smtp') {
-        if (!i.credentials) throw new Error('No SMTP details saved yet');
-        await this.email.verify(smtpSchema.parse(JSON.parse(decrypt(i.credentials))));
-      }
-      return this.prisma.integration.update({ where: { id: i.id }, data: { status: 'CONNECTED', lastError: null } });
+      if (!def?.test) throw new Error('This provider has no connection test');
+      if (!i.credentials) throw new Error('No credentials saved yet');
+      const summary = await def.test(JSON.parse(decrypt(i.credentials)), { verifySmtp: (cfg) => this.email.verify(cfg as any) });
+      return { row: await this.prisma.integration.update({ where: { id: i.id }, data: { status: 'CONNECTED', lastError: null } }), summary };
     } catch (e) {
       const message = ((e as Error).message || 'Connection failed').slice(0, 300);
-      return this.prisma.integration.update({ where: { id: i.id }, data: { status: 'ERROR', lastError: message } });
+      return { row: await this.prisma.integration.update({ where: { id: i.id }, data: { status: 'ERROR', lastError: message } }), summary: null };
     }
+  }
+
+  /** Decrypted credentials of a connected provider, or null. Used by payments, calls and messaging. */
+  static async connected(prisma: PrismaService, organisationId: string, provider: string) {
+    const i = await prisma.integration.findFirst({ where: { organisationId, provider, status: 'CONNECTED', credentials: { not: null } } });
+    return i ? { id: i.id, settings: i.settings as Record<string, unknown>, credentials: JSON.parse(decrypt(i.credentials!)) as Record<string, unknown> } : null;
   }
 
   private async checkSettings(ctx: Ctx, s: z.infer<typeof settingsSchema>) {
@@ -205,7 +292,15 @@ export class IntegrationsController implements OnModuleInit {
   @Perm('settings.manage') @Get('integrations/providers')
   async providers(@Context() ctx: Ctx) {
     const fields = await this.prisma.customField.findMany({ where: { organisationId: ctx.orgId }, orderBy: { position: 'asc' } });
-    return { providers: PROVIDERS, mappableFields: [...MAPPABLE_FIELDS, ...fields.map((f) => `cf_${f.key}`)], fieldLabels: Object.fromEntries(fields.map((f) => [`cf_${f.key}`, f.label])) };
+    const providers = REGISTRY.map(({ credentials: _c, test: _t, ...p }) => p);
+    return { providers, mappableFields: [...MAPPABLE_FIELDS, ...fields.map((f) => `cf_${f.key}`)], fieldLabels: Object.fromEntries(fields.map((f) => [`cf_${f.key}`, f.label])) };
+  }
+
+  /** Which providers are connected right now; any signed-in user may ask so screens can offer the right buttons. */
+  @Get('integrations/connected')
+  async connectedProviders(@Context() ctx: Ctx) {
+    const rows = await this.prisma.integration.findMany({ where: { organisationId: ctx.orgId, status: 'CONNECTED' }, select: { provider: true } });
+    return Object.fromEntries(REGISTRY.map((p) => [p.key, rows.some((r) => r.provider === p.key)]));
   }
 
   /** Whether email can be sent for this workspace, and through what. */
@@ -233,7 +328,8 @@ export class IntegrationsController implements OnModuleInit {
     const d = parse(integrationSchema, body);
     await this.checkSettings(ctx, d.settings);
     if ((await this.prisma.integration.count({ where: { organisationId: ctx.orgId } })) >= 50) throw new BadRequestException('A workspace can have up to 50 integrations');
-    if (d.provider === 'smtp' && (await this.prisma.integration.findFirst({ where: { organisationId: ctx.orgId, provider: 'smtp' } }))) throw new ConflictException('This workspace already has an email connection; edit it instead');
+    const def = providerByKey(d.provider)!;
+    if (def.auth === 'credentials' && (await this.prisma.integration.findFirst({ where: { organisationId: ctx.orgId, provider: d.provider } }))) throw new ConflictException(`This workspace already has a ${def.name} connection; edit it instead`);
     // A website form has nothing external to test against: its endpoint exists as soon as it is saved.
     // Credential-based providers start as "awaiting credentials" and become connected only after a successful test.
     const stored = d.provider === 'website_form' ? { token: `pmf_${randomToken()}` } : cleanCredentials(d.provider, d.credentials);
@@ -241,7 +337,9 @@ export class IntegrationsController implements OnModuleInit {
       data: { organisationId: ctx.orgId, provider: d.provider, name: d.name, status: d.provider === 'website_form' ? 'CONNECTED' : 'AWAITING_CREDENTIALS', credentials: encrypt(JSON.stringify(stored)), settings: d.settings as Prisma.InputJsonObject, fieldMapping: d.fieldMapping as Prisma.InputJsonObject, createdById: ctx.userId },
     });
     await audit(this.prisma, ctx, 'integration.created', 'integration', i.id, { provider: d.provider, name: d.name });
-    return this.present(d.provider === 'website_form' ? i : await this.testConnection(i));
+    if (d.provider === 'website_form') return this.present(i);
+    const t = await this.testConnection(i);
+    return { ...this.present(t.row), summary: t.summary };
   }
 
   @Perm('settings.manage') @Patch('integrations/:id')
@@ -252,14 +350,16 @@ export class IntegrationsController implements OnModuleInit {
     let credentials: string | undefined;
     if (d.credentials && existing.provider !== 'website_form') {
       const current = existing.credentials ? (JSON.parse(decrypt(existing.credentials)) as Record<string, unknown>) : undefined;
-      credentials = encrypt(JSON.stringify(cleanCredentials(existing.provider as ProviderKey, d.credentials, current)));
+      credentials = encrypt(JSON.stringify(cleanCredentials(existing.provider, d.credentials, current)));
     }
     // Re-enabling a credential-based provider, or changing its credentials, re-runs the connection test.
     if (d.status === 'CONNECTED' && existing.provider !== 'website_form') d.status = undefined;
     const i = await this.prisma.integration.update({ where: { id }, data: { name: d.name, settings: d.settings as Prisma.InputJsonObject | undefined, fieldMapping: d.fieldMapping as Prisma.InputJsonObject | undefined, credentials, status: d.status, lastError: d.status === 'CONNECTED' ? null : undefined } });
     await audit(this.prisma, ctx, 'integration.updated', 'integration', id, { status: d.status, name: d.name, credentialsChanged: !!credentials });
     const retest = existing.provider !== 'website_form' && (!!credentials || (body as { status?: string })?.status === 'CONNECTED');
-    return this.present(retest ? await this.testConnection(i) : i);
+    if (!retest) return this.present(i);
+    const t = await this.testConnection(i);
+    return { ...this.present(t.row), summary: t.summary };
   }
 
   /** Connection test on demand. */
@@ -267,9 +367,9 @@ export class IntegrationsController implements OnModuleInit {
   async test(@Context() ctx: Ctx, @Param('id') id: string) {
     const i = await this.find(ctx, id);
     if (i.provider === 'website_form') return this.present(i);
-    const r = await this.testConnection(i);
-    await audit(this.prisma, ctx, 'integration.tested', 'integration', id, { status: r.status });
-    return this.present(r);
+    const t = await this.testConnection(i);
+    await audit(this.prisma, ctx, 'integration.tested', 'integration', id, { status: t.row.status });
+    return { ...this.present(t.row), summary: t.summary };
   }
 
   /** Sends a real test email to the signed-in user through the connected SMTP integration. */

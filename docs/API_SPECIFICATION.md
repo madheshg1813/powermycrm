@@ -52,6 +52,10 @@ The organisation is always taken from the token, never from the request.
 | GET `/webhook-events`; GET/POST `/webhook-endpoints`; PATCH/DELETE `/webhook-endpoints/:id`; POST `…/:id/rotate-secret`, `…/:id/test`; GET `…/:id/deliveries`; POST `/webhook-deliveries/:id/retry` | `settings.manage` | Outbound webhooks. Secret returned once on create/rotate |
 | GET `/integrations/providers`; GET/POST `/integrations`; PATCH/DELETE `/integrations/:id`; POST `…/:id/rotate-token`; GET `…/:id/events`; POST `…/:id/events/:eventId/retry` | `settings.manage` | Website-form integrations and their event log |
 | POST `/hooks/website_form/:integrationId` | public, form token | JSON or form-encoded submission; 202 with event id, or 303 to the thank-you URL for browser posts; 200 `duplicate: true` for a repeated `_id` |
+| GET `/integrations/connected` | signed in | Which providers are connected (drives buttons in the UI) |
+| POST `/payments/:id/link` | `payments.manage` | Razorpay payment link for an expected payment |
+| POST `/calls/click-to-call` (`leadId`) | `leads.view` | Start a call through the connected telephony provider |
+| POST `/hooks/razorpay/:integrationId`, POST `/hooks/exotel/:integrationId` | public (signature / unguessable id) | Provider callbacks |
 | GET/POST `/api-keys`, DELETE `/api-keys/:id` | `settings.manage` | Bearer keys for the public API; key returned once |
 | GET `/public/me`, POST `/public/leads` | public, `Authorization: Bearer pmc_live_…` | Lead capture: `name, phone, email, company, city, source, message, customFields, externalId, duplicateStrategy, ownerId` → `{ id, outcome }` |
 
