@@ -68,6 +68,21 @@ export function useChanged(fn: () => void) {
   }, [fn]);
 }
 
+export type Opportunity = {
+  id: string; leadId: string; name: string; value: number; probability: number; status: 'OPEN' | 'WON' | 'LOST';
+  expectedCloseAt: string | null; closedAt: string | null; lostReason: string | null; notes: string | null; ownerId: string | null;
+  createdAt: string; updatedAt: string; lead?: { id: string; name: string; phone: string | null }; owner?: { id: string; name: string } | null;
+};
+export type Payment = {
+  id: string; leadId: string; opportunityId: string | null; amount: number; currency: string;
+  status: 'PENDING' | 'PAID' | 'FAILED' | 'REFUNDED'; method: 'CASH' | 'UPI' | 'BANK_TRANSFER' | 'CARD' | 'CHEQUE' | 'PAYMENT_LINK' | 'OTHER';
+  reference: string | null; notes: string | null; dueAt: string | null; paidAt: string | null; refundedAt: string | null; linkUrl: string | null;
+  createdAt: string; lead?: { id: string; name: string; phone: string | null; ownerId: string | null }; opportunity?: { id: string; name: string } | null; createdBy?: { id: string; name: string } | null;
+};
+export const OPP_STATUS: Record<Opportunity['status'], string> = { OPEN: 'Open', WON: 'Won', LOST: 'Lost' };
+export const PAYMENT_STATUS: Record<Payment['status'], string> = { PENDING: 'Expected', PAID: 'Received', FAILED: 'Failed', REFUNDED: 'Refunded' };
+export const PAYMENT_METHODS: Record<Payment['method'], string> = { UPI: 'UPI', CASH: 'Cash', BANK_TRANSFER: 'Bank transfer', CARD: 'Card', CHEQUE: 'Cheque', PAYMENT_LINK: 'Payment link', OTHER: 'Other' };
+
 export const TASK_TYPES: Record<string, string> = {
   FOLLOW_UP: 'Follow-up', CALLBACK: 'Callback', MEETING: 'Meeting', DEMO: 'Demo', SITE_VISIT: 'Site visit', TASK: 'Task',
 };

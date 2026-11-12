@@ -178,6 +178,10 @@ const serialize = (l: LeadRow) => ({
   lists: l.lists.map((x) => x.list),
 });
 
+// Deal and payment serialisers live here so the deals module can depend on this one without a cycle.
+export const serializeOpp = <T extends { value: Prisma.Decimal }>(o: T) => ({ ...o, value: Number(o.value) });
+export const serializePayment = <T extends { amount: Prisma.Decimal }>(p: T) => ({ ...p, amount: Number(p.amount) });
+
 export const csvCell = (v: unknown) => {
   let s = v === null || v === undefined ? '' : String(v);
   if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`; // neutralise spreadsheet formulas
@@ -463,7 +467,7 @@ export class LeadsService {
 
   async get(ctx: Ctx, id: string) {
     const lead = await this.find(ctx, id);
-    const [duplicates, tasks] = await Promise.all([
+    const [duplicates, tasks, opportunities, payments] = await Promise.all([
       this.duplicatesOf(ctx, lead.phoneNormalized, lead.email, lead.id),
       this.prisma.task.findMany({
         where: { leadId: id, organisationId: ctx.orgId },
@@ -471,8 +475,12 @@ export class LeadsService {
         orderBy: [{ status: 'asc' }, { dueAt: 'asc' }],
         take: 50,
       }),
+      this.prisma.opportunity.findMany({ where: { leadId: id, organisationId: ctx.orgId }, include: { owner: { select: { id: true, name: true } } }, orderBy: [{ status: 'asc' }, { createdAt: 'desc' }], take: 50 }),
+      ctx.perms.has('payments.view')
+        ? this.prisma.payment.findMany({ where: { leadId: id, organisationId: ctx.orgId }, include: { opportunity: { select: { id: true, name: true } }, createdBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' }, take: 50 })
+        : Promise.resolve([]),
     ]);
-    return { ...serialize(lead), duplicates, tasks };
+    return { ...serialize(lead), duplicates, tasks, opportunities: opportunities.map(serializeOpp), payments: payments.map(serializePayment) };
   }
 
   async update(ctx: Ctx, id: string, body: unknown) {

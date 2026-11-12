@@ -883,6 +883,101 @@ describe('assignment rules', () => {
   });
 });
 
+describe('deals and payments', () => {
+  it('tracks deals per lead, forecasts open value and records payments within the lead scope', async () => {
+    const o = await registerOrg('Deals');
+    const agent = await addMember(o, 'Sales Agent');
+    const lead = (await o.post('/leads', { name: 'Deal Lead', phone: '9666600001' })).body;
+    const agentLead = (await agent.post('/leads', { name: 'Agent Deal Lead', phone: '9666600002' })).body;
+    const nextMonth = new Date(); nextMonth.setMonth(nextMonth.getMonth() + 1, 10);
+    const lastMonth = new Date(); lastMonth.setMonth(lastMonth.getMonth() - 1, 10);
+
+    // Deals
+    expect((await o.post('/opportunities', { leadId: lead.id, name: '' })).status).toBe(400);
+    const d1 = await o.post('/opportunities', { leadId: lead.id, name: 'Annual plan', value: 100000, probability: 60, expectedCloseAt: nextMonth.toISOString() });
+    expect(d1.status).toBe(201);
+    expect(d1.body).toMatchObject({ status: 'OPEN', value: 100000, probability: 60, owner: { name: 'Owner One' } });
+    const d2 = (await o.post('/opportunities', { leadId: lead.id, name: 'Training', value: 20000, probability: 50, expectedCloseAt: lastMonth.toISOString() })).body;
+    const d3 = (await o.post('/opportunities', { leadId: lead.id, name: 'Unscheduled', value: 5000, probability: 20 })).body;
+    const d4 = (await agent.post('/opportunities', { leadId: agentLead.id, name: 'Agent deal', value: 40000, probability: 100, expectedCloseAt: nextMonth.toISOString() })).body;
+    expect((await agent.post('/opportunities', { leadId: lead.id, name: 'Not mine', value: 1 })).status).toBe(400);
+
+    const fc = (await o.get('/opportunities/forecast?months=3')).body;
+    expect(fc.total).toEqual({ count: 4, value: 165000, weighted: 60000 + 10000 + 1000 + 40000 });
+    expect(fc.overdue).toEqual({ count: 1, value: 20000, weighted: 10000 });
+    expect(fc.unscheduled).toEqual({ count: 1, value: 5000, weighted: 1000 });
+    expect(fc.months[1]).toMatchObject({ count: 2, value: 140000, weighted: 100000 });
+    expect((await agent.get('/opportunities/forecast')).body.total).toEqual({ count: 1, value: 40000, weighted: 40000 });
+
+    const won = await o.patch(`/opportunities/${d1.body.id}`, { status: 'WON' });
+    expect(won.body).toMatchObject({ status: 'WON', probability: 100 });
+    expect(won.body.closedAt).toBeTruthy();
+    const lost = await o.patch(`/opportunities/${d2.id}`, { status: 'LOST', lostReason: 'Budget cut' });
+    expect(lost.body).toMatchObject({ status: 'LOST', lostReason: 'Budget cut' });
+    const list = (await o.get('/opportunities?sort=value&dir=desc')).body;
+    expect(list.total).toBe(4);
+    expect(list.totals).toEqual({ open: { count: 2, value: 45000 }, won: { count: 1, value: 100000 }, lost: { count: 1, value: 20000 } });
+    expect((await o.get('/opportunities?status=OPEN')).body.items.map((x: any) => x.name).sort()).toEqual(['Agent deal', 'Unscheduled']);
+    expect((await agent.get('/opportunities')).body.items.map((x: any) => x.name)).toEqual(['Agent deal']);
+    expect((await agent.get(`/opportunities/${d1.body.id}`)).status).toBe(404);
+    expect((await agent.patch(`/opportunities/${d1.body.id}`, { value: 1 })).status).toBe(404);
+    const types = (await o.get(`/leads/${lead.id}/activities`)).body.map((a: any) => a.type);
+    expect(types).toEqual(expect.arrayContaining(['opportunity_created', 'opportunity_won', 'opportunity_lost']));
+    expect((await o.get(`/leads/${lead.id}`)).body.opportunities).toHaveLength(3);
+
+    // Payments
+    expect((await o.post('/payments', { leadId: lead.id, amount: 0 })).status).toBe(400);
+    expect((await o.post('/payments', { leadId: lead.id, amount: 100, opportunityId: d4.id })).status).toBe(400); // deal belongs to another lead
+    const yesterday = new Date(Date.now() - 864e5).toISOString();
+    const p1 = await o.post('/payments', { leadId: lead.id, opportunityId: d1.body.id, amount: 60000, method: 'UPI', status: 'PAID', reference: 'UPI123' });
+    expect(p1.status).toBe(201);
+    expect(p1.body).toMatchObject({ status: 'PAID', amount: 60000, currency: 'INR', opportunity: { name: 'Annual plan' } });
+    expect(p1.body.paidAt).toBeTruthy();
+    const p2 = (await o.post('/payments', { leadId: lead.id, opportunityId: d1.body.id, amount: 40000, method: 'BANK_TRANSFER', dueAt: yesterday })).body;
+    const p3 = (await o.post('/payments', { leadId: lead.id, amount: 1500, dueAt: new Date(Date.now() + 7 * 864e5).toISOString() })).body;
+    const p4 = (await agent.post('/payments', { leadId: agentLead.id, amount: 9000, status: 'PAID', method: 'CASH' })).body;
+
+    const all = (await o.get('/payments')).body;
+    expect(all.total).toBe(4);
+    expect(all.totals).toMatchObject({ paid: { count: 2, amount: 69000 }, pending: { count: 2, amount: 41500 }, overdue: { count: 1, amount: 40000 } });
+    expect((await o.get('/payments?status=OVERDUE')).body.items.map((p: any) => p.id)).toEqual([p2.id]);
+    expect((await o.get('/payments?method=CASH')).body.items.map((p: any) => p.id)).toEqual([p4.id]);
+    expect((await o.get('/payments?q=upi123')).body.total).toBe(1);
+    expect((await agent.get('/payments')).body.items.map((p: any) => p.id)).toEqual([p4.id]);
+    expect((await agent.patch(`/payments/${p2.id}`, { status: 'PAID' })).status).toBe(404);
+
+    const paid = await o.patch(`/payments/${p2.id}`, { status: 'PAID', reference: 'NEFT987' });
+    expect(paid.body.status).toBe('PAID');
+    expect(paid.body.paidAt).toBeTruthy();
+    expect((await o.get(`/opportunities/${d1.body.id}`)).body.payments).toHaveLength(2);
+    expect((await o.del(`/payments/${p2.id}`)).status).toBe(400); // paid: refund instead
+    expect((await o.patch(`/payments/${p3.id}`, { status: 'REFUNDED' })).status).toBe(400); // never paid
+    expect((await o.patch(`/payments/${p2.id}`, { status: 'REFUNDED' })).body.refundedAt).toBeTruthy();
+    expect((await o.patch(`/payments/${p2.id}`, { status: 'PENDING' })).status).toBe(400);
+    expect((await o.del(`/payments/${p3.id}`)).status).toBe(200);
+    expect((await o.del(`/opportunities/${d1.body.id}`)).status).toBe(400); // has a paid payment
+    expect((await o.del(`/opportunities/${d3.id}`)).status).toBe(200);
+    const acts = (await o.get(`/leads/${lead.id}/activities`)).body.map((a: any) => a.type);
+    expect(acts).toEqual(expect.arrayContaining(['payment_received', 'payment_recorded', 'payment_refunded', 'opportunity_deleted']));
+    expect((await o.get(`/leads/${lead.id}`)).body.payments).toHaveLength(2);
+
+    // Permissions and isolation.
+    const role = (await o.post('/roles', { name: 'No money', scope: 'ALL', permissions: ['leads.view'] })).body;
+    const users = (await o.get('/users')).body as any[];
+    await o.patch(`/users/${users.find((u) => u.id === agent.userId).membershipId}`, { roleId: role.id });
+    expect((await agent.get('/payments')).status).toBe(403);
+    expect((await agent.post('/payments', { leadId: lead.id, amount: 5 })).status).toBe(403);
+    expect((await agent.get(`/leads/${lead.id}`)).body.payments).toEqual([]);
+    const other = await registerOrg('DealsOther');
+    expect((await other.get('/opportunities')).body.total).toBe(0);
+    expect((await other.get('/payments')).body.total).toBe(0);
+    expect((await other.post('/opportunities', { leadId: lead.id, name: 'X', value: 1 })).status).toBe(400);
+    expect((await other.post('/payments', { leadId: lead.id, amount: 1 })).status).toBe(400);
+    expect((await other.patch(`/payments/${p1.body.id}`, { status: 'REFUNDED' })).status).toBe(404);
+    expect((await other.del(`/opportunities/${d4.id}`)).status).toBe(404);
+  });
+});
+
 describe('audit log', () => {
   it('records administrative actions with the actor', async () => {
     const o = await registerOrg('Audit');

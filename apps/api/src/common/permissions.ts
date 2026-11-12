@@ -8,6 +8,8 @@ export const PERMISSIONS = [
   { key: 'leads.export', group: 'Leads', label: 'Export leads' },
   { key: 'pipeline.manage', group: 'Sales', label: 'Manage pipelines, stages, sources and labels' },
   { key: 'tasks.manage', group: 'Follow-ups', label: 'View and manage other users’ tasks' },
+  { key: 'payments.view', group: 'Payments', label: 'View payments' },
+  { key: 'payments.manage', group: 'Payments', label: 'Record, update and refund payments' },
   { key: 'reports.view', group: 'Reports', label: 'View dashboard and reports' },
   { key: 'users.view', group: 'Team', label: 'View users and teams' },
   { key: 'users.manage', group: 'Team', label: 'Invite, edit and deactivate users' },
@@ -27,14 +29,14 @@ export const SYSTEM_ROLES: { systemKey: string; name: string; scope: 'OWN' | 'TE
     scope: 'TEAM',
     permissions: [
       'leads.view', 'leads.create', 'leads.edit', 'leads.assign', 'leads.import', 'leads.export',
-      'tasks.manage', 'reports.view', 'users.view',
+      'payments.view', 'payments.manage', 'tasks.manage', 'reports.view', 'users.view',
     ],
   },
   {
     systemKey: 'agent',
     name: 'Sales Agent',
     scope: 'OWN',
-    permissions: ['leads.view', 'leads.create', 'leads.edit'],
+    permissions: ['leads.view', 'leads.create', 'leads.edit', 'payments.view', 'payments.manage'],
   },
 ];
 

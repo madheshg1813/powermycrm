@@ -33,7 +33,7 @@ the browser, **None** = untested. Rows marked (ext) go beyond what TeleCRM docum
 | WhatsApp Cloud API inbox, templates, bulk, chatbot | /whatsapp-crm | — | Designed | None |
 | WhatsApp chat sync | /whatsapp-crm | — | Researching | None |
 | Triggers, workflows, drip | /features 4.5 | — | Not Started | None |
-| Payment creation, forecasting | /features 2.9 | Deal value and expected close on leads only | Not Started | None |
+| Payment creation, forecasting | /features 2.9 | Deals per lead (value, probability, expected close, won/lost) with a forecast by expected-close month; manual payment records with received/expected/overdue totals. Payment links need a gateway (Razorpay, not connected) | Testing | API + Manual |
 | Razorpay | /integrations | — | Designed | None |
 | Portal integrations (IndiaMART, Justdial, etc.) | /integrations | — | Designed | None |
 | Google Sheets, Google Meet, Shopify, WooCommerce | /integrations | — | Not Started | None |

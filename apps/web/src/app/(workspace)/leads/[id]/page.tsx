@@ -1,18 +1,20 @@
 'use client';
 import {
-  Archive, ArchiveRestore, ArrowLeft, ArrowRightLeft, CalendarCheck, CalendarPlus, Check, GitMerge, ListPlus, Mail, MessageSquareText, Pencil, Phone, Plus, Trash2, UserRound, Sparkles, X,
+  Archive, ArchiveRestore, ArrowLeft, ArrowRightLeft, Banknote, CalendarCheck, CalendarPlus, Check, GitMerge, Handshake, ListPlus, Mail, MessageSquareText, Pencil, Phone, Plus, Trash2, UserRound, Sparkles, X,
 } from 'lucide-react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { OpportunityForm, PaymentForm } from '@/components/deal-forms';
 import { LeadForm, TaskForm } from '@/components/forms';
-import { Avatar, ColorDot, Dropdown, EmptyState, ErrorState, LabelChip, Skeleton, Spinner, Tabs, cx, useUi } from '@/components/ui';
+import { Avatar, ColorDot, Dropdown, EmptyState, ErrorState, Field, LabelChip, Modal, Skeleton, Spinner, Tabs, cx, useUi } from '@/components/ui';
 import { api, useApi } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { fmtDate, fmtDateTime, money, relTime } from '@/lib/format';
-import { Lead, TASK_TYPES, Task, useChanged, useRefs } from '@/lib/refs';
+import { Lead, OPP_STATUS, Opportunity, PAYMENT_METHODS, PAYMENT_STATUS, Payment, TASK_TYPES, Task, useChanged, useRefs } from '@/lib/refs';
 
-type Detail = Lead & { duplicates: { id: string; name: string; phone: string | null; email: string | null; createdAt: string; owner: { name: string } | null }[]; tasks: Task[] };
+type Detail = Lead & { duplicates: { id: string; name: string; phone: string | null; email: string | null; createdAt: string; owner: { name: string } | null }[]; tasks: Task[]; opportunities: Opportunity[]; payments: Payment[] };
+type Tab = 'timeline' | 'tasks' | 'deals' | 'payments';
 type Activity = { id: string; type: string; data: any; createdAt: string; actor: { id: string; name: string } | null };
 
 const FIELD_LABELS: Record<string, string> = { name: 'Name', phone: 'Phone', email: 'Email', company: 'Company', city: 'City', score: 'Score', dealValue: 'Deal value', expectedCloseAt: 'Expected close', source: 'Source', lostReason: 'Lost reason' };
@@ -33,6 +35,17 @@ function describe(a: Activity): { icon: React.ComponentType<{ className?: string
     case 'task_cancelled': return { icon: CalendarCheck, text: <>Cancelled <strong>{d.title}</strong></> };
     case 'task_reopened': return { icon: CalendarCheck, text: <>Reopened <strong>{d.title}</strong></> };
     case 'merged': return { icon: GitMerge, text: <>Merged duplicate <strong>{d.name}</strong></> };
+    case 'opportunity_created': return { icon: Handshake, text: <>Added deal <strong>{d.name}</strong>{d.value ? ` worth ${money(d.value)}` : ''}</> };
+    case 'opportunity_won': return { icon: Handshake, text: <>Won deal <strong>{d.name}</strong>{d.value ? ` worth ${money(d.value)}` : ''}</> };
+    case 'opportunity_lost': return { icon: Handshake, text: <>Lost deal <strong>{d.name}</strong>{d.lostReason ? ` (${d.lostReason})` : ''}</> };
+    case 'opportunity_reopened': return { icon: Handshake, text: <>Reopened deal <strong>{d.name}</strong></> };
+    case 'opportunity_updated': return { icon: Handshake, text: <>Updated deal <strong>{d.name}</strong></> };
+    case 'opportunity_deleted': return { icon: Handshake, text: <>Deleted deal <strong>{d.name}</strong></> };
+    case 'payment_recorded': return { icon: Banknote, text: <>Expecting payment of <strong>{money(d.amount, d.currency)}</strong></> };
+    case 'payment_received': return { icon: Banknote, text: <>Received <strong>{money(d.amount, d.currency)}</strong>{d.method ? ` by ${PAYMENT_METHODS[d.method as Payment['method']] ?? d.method}` : ''}{d.reference ? ` (${d.reference})` : ''}</> };
+    case 'payment_refunded': return { icon: Banknote, text: <>Refunded <strong>{money(d.amount, d.currency)}</strong></> };
+    case 'payment_failed': return { icon: Banknote, text: <>Payment of <strong>{money(d.amount, d.currency)}</strong> failed</> };
+    case 'payment_updated': return { icon: Banknote, text: 'Updated a payment' };
     case 'archived': return { icon: Archive, text: 'Archived' };
     case 'restored': return { icon: ArchiveRestore, text: 'Restored' };
     default: return { icon: Sparkles, text: a.type.replace(/_/g, ' ') };
@@ -47,7 +60,17 @@ export default function LeadDetailPage() {
   const { toast, confirm } = useUi();
   const lead = useApi<Detail>(`/leads/${id}`);
   const acts = useApi<Activity[]>(`/leads/${id}/activities`);
-  const [tab, setTab] = useState<'timeline' | 'tasks'>('timeline');
+  const [tab, setTab] = useState<Tab>('timeline');
+  const [dealOpen, setDealOpen] = useState(false);
+  const [editDeal, setEditDeal] = useState<Opportunity | null>(null);
+  const [losing, setLosing] = useState<Opportunity | null>(null);
+  const [lostReason, setLostReason] = useState('');
+  const [payOpen, setPayOpen] = useState(false);
+  const [editPay, setEditPay] = useState<Payment | null>(null);
+  useEffect(() => {
+    const t = new URLSearchParams(window.location.search).get('tab');
+    if (t === 'deals' || t === 'payments' || t === 'tasks') setTab(t);
+  }, []);
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
@@ -130,6 +153,25 @@ export default function LeadDetailPage() {
       lead.reload();
       reloadRefs();
     } catch (e) { toast((e as Error).message, 'error'); }
+  }
+
+  async function patchDeal(d: Opportunity, body: Record<string, unknown>, message: string) {
+    try { await api(`/opportunities/${d.id}`, { method: 'PATCH', body }); toast(message); reload(); }
+    catch (e) { toast((e as Error).message, 'error'); }
+  }
+  async function deleteDeal(d: Opportunity) {
+    if (!(await confirm({ title: `Delete the deal ${d.name}?`, text: 'Payments recorded against it stay on the lead. This cannot be undone.', confirmLabel: 'Delete deal', danger: true }))) return;
+    try { await api(`/opportunities/${d.id}`, { method: 'DELETE' }); toast('Deal deleted'); reload(); }
+    catch (e) { toast((e as Error).message, 'error'); }
+  }
+  async function patchPayment(p: Payment, body: Record<string, unknown>, message: string) {
+    try { await api(`/payments/${p.id}`, { method: 'PATCH', body }); toast(message); reload(); }
+    catch (e) { toast((e as Error).message, 'error'); }
+  }
+  async function deletePayment(p: Payment) {
+    if (!(await confirm({ title: `Delete this ${money(p.amount, p.currency)} payment?`, text: 'Only expected or failed payments can be deleted. This cannot be undone.', confirmLabel: 'Delete', danger: true }))) return;
+    try { await api(`/payments/${p.id}`, { method: 'DELETE' }); toast('Payment deleted'); reload(); }
+    catch (e) { toast((e as Error).message, 'error'); }
   }
 
   async function setTaskStatus(t: Task, status: string) {
@@ -267,7 +309,12 @@ export default function LeadDetailPage() {
 
         <section className="card min-w-0">
           <div className="px-5 pt-4">
-            <Tabs value={tab} onChange={setTab} tabs={[{ value: 'timeline', label: 'Timeline' }, { value: 'tasks', label: 'Follow-ups', count: openTasks.length }]} />
+            <Tabs value={tab} onChange={setTab} tabs={[
+              { value: 'timeline' as Tab, label: 'Timeline' },
+              { value: 'tasks' as Tab, label: 'Follow-ups', count: openTasks.length },
+              { value: 'deals' as Tab, label: 'Deals', count: l.opportunities.filter((d) => d.status === 'OPEN').length },
+              ...(can('payments.view') ? [{ value: 'payments' as Tab, label: 'Payments', count: l.payments.filter((p) => p.status === 'PENDING').length }] : []),
+            ]} />
           </div>
 
           {tab === 'timeline' ? (
@@ -302,7 +349,7 @@ export default function LeadDetailPage() {
                   </ol>
                 )}
             </div>
-          ) : !l.tasks.length ? (
+          ) : tab === 'tasks' ? (!l.tasks.length ? (
             <EmptyState icon={CalendarCheck} title="No follow-ups yet" text="Schedule a callback, meeting or demo so this lead is not forgotten."
               action={!l.archivedAt ? <button className="btn-ghost btn-sm" onClick={() => { setEditTask(null); setTaskOpen(true); }}>Schedule follow-up</button> : undefined} />
           ) : (
@@ -324,9 +371,84 @@ export default function LeadDetailPage() {
                 );
               })}
             </ul>
+          )) : tab === 'deals' ? (
+            <div>
+              {canEdit && <div className="flex items-center justify-between gap-3 px-5 pt-4"><p className="text-ink-muted">{l.opportunities.length ? `${money(l.opportunities.filter((d) => d.status === 'WON').reduce((a, d) => a + d.value, 0), me?.organisation.currency)} won · ${money(l.opportunities.filter((d) => d.status === 'OPEN').reduce((a, d) => a + d.value, 0), me?.organisation.currency)} open` : 'Track each sale, upsell or renewal as its own deal.'}</p><button className="btn-ghost btn-sm" onClick={() => { setEditDeal(null); setDealOpen(true); }}><Plus className="h-3.5 w-3.5" />New deal</button></div>}
+              {!l.opportunities.length ? <EmptyState icon={Handshake} title="No deals yet" text="A deal records the value you expect to close and feeds the forecast." /> : (
+                <ul className="divide-y divide-ink/5">
+                  {l.opportunities.map((d) => (
+                    <li key={d.id} className="flex flex-wrap items-start gap-3 px-5 py-3.5">
+                      <div className="min-w-0 flex-1">
+                        <p className="font-medium">{d.name}<span className={cx('ml-2', d.status === 'WON' ? 'pill-green' : d.status === 'LOST' ? 'pill-danger' : 'pill-muted')}>{OPP_STATUS[d.status]}</span></p>
+                        <p className="mt-0.5 flex flex-wrap gap-x-2 text-[13px] text-ink-muted">
+                          <span className="font-semibold text-ink">{money(d.value, me?.organisation.currency)}</span>
+                          {d.status === 'OPEN' && <span>{d.probability}% likely</span>}
+                          {d.expectedCloseAt && d.status === 'OPEN' && <span>expected {fmtDate(d.expectedCloseAt)}</span>}
+                          {d.closedAt && <span>closed {fmtDate(d.closedAt)}</span>}
+                          {d.owner && <span>{d.owner.name}</span>}
+                          {d.lostReason && <span>· {d.lostReason}</span>}
+                        </p>
+                        {d.notes && <p className="mt-1 text-[13px] text-ink-soft">{d.notes}</p>}
+                      </div>
+                      {canEdit && (
+                        <span className="flex flex-wrap gap-1.5">
+                          {d.status === 'OPEN' && <button className="btn-ghost btn-sm" onClick={() => patchDeal(d, { status: 'WON' }, 'Deal marked as won')}>Won</button>}
+                          {d.status === 'OPEN' && <button className="btn-ghost btn-sm" onClick={() => { setLostReason(''); setLosing(d); }}>Lost</button>}
+                          {d.status !== 'OPEN' && <button className="btn-ghost btn-sm" onClick={() => patchDeal(d, { status: 'OPEN' }, 'Deal reopened')}>Reopen</button>}
+                          <button className="btn-icon" onClick={() => { setEditDeal(d); setDealOpen(true); }} aria-label={`Edit ${d.name}`}><Pencil className="h-4 w-4" /></button>
+                          {can('leads.delete') && <button className="btn-icon" onClick={() => deleteDeal(d)} aria-label={`Delete ${d.name}`}><Trash2 className="h-4 w-4" /></button>}
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          ) : (
+            <div>
+              {can('payments.manage') && !l.archivedAt && <div className="flex items-center justify-between gap-3 px-5 pt-4"><p className="text-ink-muted">{l.payments.length ? `${money(l.payments.filter((p) => p.status === 'PAID').reduce((a, p) => a + p.amount, 0), me?.organisation.currency)} received · ${money(l.payments.filter((p) => p.status === 'PENDING').reduce((a, p) => a + p.amount, 0), me?.organisation.currency)} expected` : 'Record money received or expected from this lead.'}</p><button className="btn-ghost btn-sm" onClick={() => { setEditPay(null); setPayOpen(true); }}><Plus className="h-3.5 w-3.5" />Record payment</button></div>}
+              {!l.payments.length ? <EmptyState icon={Banknote} title="No payments yet" text="Payments you record here also appear on the Payments page." /> : (
+                <ul className="divide-y divide-ink/5">
+                  {l.payments.map((p) => {
+                    const overdue = p.status === 'PENDING' && p.dueAt && new Date(p.dueAt) < new Date();
+                    return (
+                      <li key={p.id} className="flex flex-wrap items-start gap-3 px-5 py-3.5">
+                        <div className="min-w-0 flex-1">
+                          <p className="font-medium">{money(p.amount, p.currency)}<span className={cx('ml-2', p.status === 'PAID' ? 'pill-green' : p.status === 'FAILED' ? 'pill-danger' : overdue ? 'pill-amber' : 'pill-muted')}>{overdue ? 'Overdue' : PAYMENT_STATUS[p.status]}</span></p>
+                          <p className="mt-0.5 flex flex-wrap gap-x-2 text-[13px] text-ink-muted">
+                            <span>{PAYMENT_METHODS[p.method]}</span>
+                            {p.reference && <span>{p.reference}</span>}
+                            {(p.status === 'PAID' || p.status === 'REFUNDED') && p.paidAt && <span>received {fmtDate(p.paidAt)}</span>}
+                            {p.status === 'PENDING' && p.dueAt && <span>due {fmtDate(p.dueAt)}</span>}
+                            {p.opportunity && <span>for {p.opportunity.name}</span>}
+                            {p.createdBy && <span>by {p.createdBy.name}</span>}
+                          </p>
+                          {p.notes && <p className="mt-1 text-[13px] text-ink-soft">{p.notes}</p>}
+                        </div>
+                        {can('payments.manage') && (
+                          <span className="flex flex-wrap gap-1.5">
+                            {p.status === 'PENDING' && <button className="btn-ghost btn-sm" onClick={() => patchPayment(p, { status: 'PAID' }, 'Payment marked as received')}>Mark received</button>}
+                            {p.status === 'PAID' && <button className="btn-ghost btn-sm" onClick={async () => { if (await confirm({ title: `Refund ${money(p.amount, p.currency)}?`, text: 'The payment is marked as refunded. The record is kept.', confirmLabel: 'Mark refunded', danger: true })) patchPayment(p, { status: 'REFUNDED' }, 'Payment marked as refunded'); }}>Refund</button>}
+                            {p.status !== 'REFUNDED' && <button className="btn-icon" onClick={() => { setEditPay(p); setPayOpen(true); }} aria-label="Edit payment"><Pencil className="h-4 w-4" /></button>}
+                            {(p.status === 'PENDING' || p.status === 'FAILED') && <button className="btn-icon" onClick={() => deletePayment(p)} aria-label="Delete payment"><Trash2 className="h-4 w-4" /></button>}
+                          </span>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
           )}
         </section>
       </div>
+
+      <OpportunityForm open={dealOpen} onClose={() => setDealOpen(false)} leadId={l.id} deal={editDeal} onSaved={reload} />
+      <PaymentForm open={payOpen} onClose={() => setPayOpen(false)} leadId={l.id} deals={l.opportunities.filter((d) => d.status !== 'LOST').map((d) => ({ id: d.id, name: d.name }))} payment={editPay} onSaved={reload} />
+      <Modal open={!!losing} onClose={() => setLosing(null)} title={`Mark ${losing?.name ?? 'deal'} as lost`}
+        footer={<><button className="btn-ghost" onClick={() => setLosing(null)}>Cancel</button><button className="btn-danger" onClick={() => { if (losing) patchDeal(losing, { status: 'LOST', lostReason: lostReason || null }, 'Deal marked as lost'); setLosing(null); }}>Mark lost</button></>}>
+        <Field label="Reason" hint="Optional, shown on the deal and in the timeline"><input className="input" value={lostReason} onChange={(e) => setLostReason(e.target.value)} maxLength={300} autoFocus placeholder="Chose a competitor" /></Field>
+      </Modal>
 
       <LeadForm open={editOpen} onClose={() => setEditOpen(false)} lead={l} onSaved={reload} />
       <TaskForm open={taskOpen} onClose={() => setTaskOpen(false)} leadId={l.id} task={editTask} onSaved={reload} />

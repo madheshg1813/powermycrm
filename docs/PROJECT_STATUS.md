@@ -1,6 +1,6 @@
 # Project status
 
-Last updated: 2026-11-11 (session 3, in progress)
+Last updated: 2026-11-12 (session 3, in progress)
 
 ## Where it stands
 
@@ -13,10 +13,11 @@ PowerMyCRM is **not** at feature parity with TeleCRM and is not production-ready
 | 0 | Monorepo, PostgreSQL, design system, app shell | Completed |
 | 1 | Auth, organisations, users, invitations, roles, teams, audit log | Completed, except email delivery, MFA and email verification |
 | 2 | Leads | Core completed, plus custom fields, saved views and round-robin assignment rules (session 2) and static lead lists, custom-field filters, sorting and columns (session 3). Dynamic lists, attachments, conditional rules, Excel (.xlsx) import not started |
-| 3 | Pipelines and Kanban | Core completed; opportunities, forecasting, SLA timers, required fields per stage not started |
+| 3 | Pipelines and Kanban | Core completed; deals (opportunities) with forecast completed (session 3). SLA timers, required fields per stage not started |
 | 4 | Tasks and follow-ups | Core completed; calendar view, recurring tasks, reminders and push not started |
 | 5 | Dashboard and reports | Dashboard and reports module completed (session 3). No custom report builder, Excel export or scheduled reports |
-| 6–18 | Queue, integrations, calling, WhatsApp, SMS/email, automation, payments, AI, super admin, mobile app, production deployment | Not started |
+| 11 | Payments | Manual payment records (expected, received, failed, refunded), totals, Payments page. No payment gateway yet |
+| 6–10, 12–18 | Queue, integrations, calling, WhatsApp, SMS/email, automation, AI, super admin, mobile app, production deployment | Not started |
 
 ## What works today
 
@@ -24,6 +25,8 @@ PowerMyCRM is **not** at feature parity with TeleCRM and is not production-ready
 - Invite users by link, accept invitations, roles with 14 permissions and own/team/all record scope, custom roles, teams, deactivate users.
 - Leads: create, edit, search, filter (including by any custom field: text contains, number range, date range, option, yes/no), sort (built-in columns or any custom field), optional custom-field columns, paginate, bulk assign / move stage / label / archive / restore, permanent delete, duplicate detection on phone and email, merge, CSV import with column mapping and duplicate strategy, CSV export, notes, activity timeline, assignment notifications.
 - Lead lists: static named lists; add or remove selected leads in bulk from the leads page or the lead page, filter the leads list by list, manage lists (rename, describe, delete) in Settings. Counts respect the user's record scope.
+- Deals: several deals per lead with value, probability, expected close and owner; won/lost/reopen with reasons; Deals page with open/won/lost totals and a six-month forecast (value and probability-weighted value by expected-close month).
+- Payments: record expected or received money per lead (optionally per deal), methods, references, mark received, refund; Payments page with received/expected/overdue/refunded totals and filters. Paid money is never deleted, only refunded. New permissions `payments.view` and `payments.manage` (added to existing owner, admin, manager and agent roles by migration).
 - Pipelines: multiple pipelines, custom stages with colours and order, drag-and-drop Kanban.
 - Follow-ups: callbacks, meetings, demos, site visits, tasks; today / overdue / upcoming / done; reschedule, complete, delete.
 - Reports: date-range summary of leads created, won, lost and won value by hour of day, day, week or month (in the organisation's timezone); agent leaderboard; lead-source report; follow-up report by agent and by type; CSV export of each; every figure links through to the filtered leads list. All figures are computed from the database at request time within the user's record scope.
@@ -45,9 +48,9 @@ Local configuration is in `apps/api/.env` (git-ignored). A demo workspace login 
 
 ## Next tasks, in order
 
-1. Done in session 3: static lead lists; reports module (summary, leaderboard, sources, follow-ups, CSV, drill-down); custom-field filters, sort and columns.
-2. Opportunities and payments, then the job queue and integration framework (outbox, public lead-capture API, website forms).
-3. Dynamic lists, conditional assignment rules, lead attachments (needs ).
+1. Done in session 3: static lead lists; reports; custom-field filters, sort and columns; deals with forecast; payments.
+2. Job queue (pg-boss), outbox, webhook endpoints, integration framework with website-form and API-key lead capture.
+3. Dynamic lists, conditional assignment rules, lead attachments (needs `StorageService`).
 4. Won/lost reasons, forecasting, stage SLA and ageing.
 5. Calendar view, recurring tasks, reminder scheduler (needs the job queue).
 6. Email provider so invitations, password resets and verification are actually sent.

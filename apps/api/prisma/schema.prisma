@@ -85,6 +85,8 @@ model Organisation {
   savedFilters  SavedFilter[]
   assignRules   AssignmentRule[]
   leadLists     LeadList[]
+  opportunities Opportunity[]
+  payments      Payment[]
 }
 
 enum FieldType {
@@ -169,6 +171,8 @@ model User {
   assignedTasks Task[]         @relation("TaskAssignee")
   createdTasks  Task[]         @relation("TaskCreator")
   notifications Notification[]
+  ownedOpportunities Opportunity[] @relation("OpportunityOwner")
+  createdPayments    Payment[]     @relation("PaymentCreator")
 }
 
 model Membership {
@@ -388,6 +392,8 @@ model Lead {
   activities   LeadActivity[]
   tasks        Task[]
   lists        LeadListMember[]
+  opportunities Opportunity[]
+  payments      Payment[]
 
   @@index([organisationId, archivedAt, createdAt])
   @@index([organisationId, ownerId])
@@ -434,6 +440,90 @@ model LeadListMember {
   lead Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
 
   @@id([listId, leadId])
+  @@index([leadId])
+}
+
+enum OpportunityStatus {
+  OPEN
+  WON
+  LOST
+}
+
+/// A deal on a lead. A lead can carry several over time (a new sale, an upsell, a renewal).
+/// Probability (0-100) weights the open value in the forecast.
+model Opportunity {
+  id              String            @id @default(cuid())
+  organisationId  String
+  leadId          String
+  name            String
+  value           Decimal           @default(0) @db.Decimal(14, 2)
+  probability     Int               @default(50)
+  status          OpportunityStatus @default(OPEN)
+  expectedCloseAt DateTime?
+  closedAt        DateTime?
+  lostReason      String?
+  notes           String?
+  ownerId         String?
+  createdById     String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  lead         Lead         @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  owner        User?        @relation("OpportunityOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  payments     Payment[]
+
+  @@index([organisationId, status, expectedCloseAt])
+  @@index([leadId])
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+enum PaymentMethod {
+  CASH
+  UPI
+  BANK_TRANSFER
+  CARD
+  CHEQUE
+  PAYMENT_LINK
+  OTHER
+}
+
+/// Money expected or received against a lead, optionally tied to one of its deals.
+/// provider/providerRef/linkUrl are filled by a payment-gateway integration when one is connected.
+model Payment {
+  id             String        @id @default(cuid())
+  organisationId String
+  leadId         String
+  opportunityId  String?
+  amount         Decimal       @db.Decimal(14, 2)
+  currency       String
+  status         PaymentStatus @default(PENDING)
+  method         PaymentMethod @default(OTHER)
+  reference      String?
+  notes          String?
+  dueAt          DateTime?
+  paidAt         DateTime?
+  refundedAt     DateTime?
+  provider       String?
+  providerRef    String?
+  linkUrl        String?
+  createdById    String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  lead         Lead         @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  opportunity  Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: SetNull)
+  createdBy    User?        @relation("PaymentCreator", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([organisationId, status, dueAt])
+  @@index([organisationId, paidAt])
   @@index([leadId])
 }
 
