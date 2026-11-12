@@ -1,20 +1,20 @@
 'use client';
 import {
-  Archive, ArchiveRestore, ArrowLeft, ArrowRightLeft, Banknote, CalendarCheck, CalendarPlus, Check, GitMerge, Handshake, ListPlus, Mail, MessageSquareText, Pencil, Phone, Plus, Trash2, UserRound, Sparkles, X,
+  Archive, ArchiveRestore, ArrowLeft, ArrowRightLeft, Banknote, CalendarCheck, CalendarPlus, Check, Download, FileText, GitMerge, Handshake, ListPlus, Mail, MessageSquareText, Paperclip, Pencil, Phone, Plus, Trash2, UserRound, Sparkles, Upload, X,
 } from 'lucide-react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { OpportunityForm, PaymentForm } from '@/components/deal-forms';
 import { LeadForm, TaskForm } from '@/components/forms';
 import { Avatar, ColorDot, Dropdown, EmptyState, ErrorState, Field, LabelChip, Modal, Skeleton, Spinner, Tabs, cx, useUi } from '@/components/ui';
-import { api, useApi } from '@/lib/api';
+import { api, downloadFile, uploadFile, useApi } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
-import { fmtDate, fmtDateTime, money, relTime } from '@/lib/format';
-import { Lead, OPP_STATUS, Opportunity, PAYMENT_METHODS, PAYMENT_STATUS, Payment, TASK_TYPES, Task, useChanged, useRefs } from '@/lib/refs';
+import { fileSize, fmtDate, fmtDateTime, money, relTime } from '@/lib/format';
+import { Attachment, Lead, OPP_STATUS, Opportunity, PAYMENT_METHODS, PAYMENT_STATUS, Payment, TASK_TYPES, Task, useChanged, useRefs } from '@/lib/refs';
 
-type Detail = Lead & { duplicates: { id: string; name: string; phone: string | null; email: string | null; createdAt: string; owner: { name: string } | null }[]; tasks: Task[]; opportunities: Opportunity[]; payments: Payment[] };
-type Tab = 'timeline' | 'tasks' | 'deals' | 'payments';
+type Detail = Lead & { duplicates: { id: string; name: string; phone: string | null; email: string | null; createdAt: string; owner: { name: string } | null }[]; tasks: Task[]; opportunities: Opportunity[]; payments: Payment[]; attachments: Attachment[] };
+type Tab = 'timeline' | 'tasks' | 'deals' | 'payments' | 'files';
 type Activity = { id: string; type: string; data: any; createdAt: string; actor: { id: string; name: string } | null };
 
 const FIELD_LABELS: Record<string, string> = { name: 'Name', phone: 'Phone', email: 'Email', company: 'Company', city: 'City', score: 'Score', dealValue: 'Deal value', expectedCloseAt: 'Expected close', source: 'Source', lostReason: 'Lost reason' };
@@ -47,6 +47,8 @@ function describe(a: Activity): { icon: React.ComponentType<{ className?: string
     case 'payment_refunded': return { icon: Banknote, text: <>Refunded <strong>{money(d.amount, d.currency)}</strong></> };
     case 'payment_failed': return { icon: Banknote, text: <>Payment of <strong>{money(d.amount, d.currency)}</strong> failed</> };
     case 'payment_updated': return { icon: Banknote, text: 'Updated a payment' };
+    case 'attachment_added': return { icon: Paperclip, text: <>Added file <strong>{d.name}</strong></> };
+    case 'attachment_removed': return { icon: Paperclip, text: <>Removed file <strong>{d.name}</strong></> };
     case 'archived': return { icon: Archive, text: 'Archived' };
     case 'restored': return { icon: ArchiveRestore, text: 'Restored' };
     default: return { icon: Sparkles, text: a.type.replace(/_/g, ' ') };
@@ -67,10 +69,12 @@ export default function LeadDetailPage() {
   const [losing, setLosing] = useState<Opportunity | null>(null);
   const [lostReason, setLostReason] = useState('');
   const [payOpen, setPayOpen] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
   const [editPay, setEditPay] = useState<Payment | null>(null);
   useEffect(() => {
     const t = new URLSearchParams(window.location.search).get('tab');
-    if (t === 'deals' || t === 'payments' || t === 'tasks') setTab(t);
+    if (t === 'deals' || t === 'payments' || t === 'tasks' || t === 'files') setTab(t);
   }, []);
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
@@ -172,6 +176,20 @@ export default function LeadDetailPage() {
   async function deletePayment(p: Payment) {
     if (!(await confirm({ title: `Delete this ${money(p.amount, p.currency)} payment?`, text: 'Only expected or failed payments can be deleted. This cannot be undone.', confirmLabel: 'Delete', danger: true }))) return;
     try { await api(`/payments/${p.id}`, { method: 'DELETE' }); toast('Payment deleted'); reload(); }
+    catch (e) { toast((e as Error).message, 'error'); }
+  }
+
+  async function upload(files: FileList | null) {
+    const file = files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try { await uploadFile(`/leads/${id}/attachments`, file); toast(`${file.name} uploaded`); reload(); }
+    catch (e) { toast((e as Error).message, 'error'); }
+    finally { setUploading(false); if (fileInput.current) fileInput.current.value = ''; }
+  }
+  async function removeFile(a: Attachment) {
+    if (!(await confirm({ title: `Delete ${a.name}?`, text: 'The file is removed from storage. This cannot be undone.', confirmLabel: 'Delete', danger: true }))) return;
+    try { await api(`/attachments/${a.id}`, { method: 'DELETE' }); toast('File deleted'); reload(); }
     catch (e) { toast((e as Error).message, 'error'); }
   }
 
@@ -315,6 +333,7 @@ export default function LeadDetailPage() {
               { value: 'tasks' as Tab, label: 'Follow-ups', count: openTasks.length },
               { value: 'deals' as Tab, label: 'Deals', count: l.opportunities.filter((d) => d.status === 'OPEN').length },
               ...(can('payments.view') ? [{ value: 'payments' as Tab, label: 'Payments', count: l.payments.filter((p) => p.status === 'PENDING').length }] : []),
+              { value: 'files' as Tab, label: 'Files', count: l.attachments.length || undefined },
             ]} />
           </div>
 
@@ -372,7 +391,29 @@ export default function LeadDetailPage() {
                 );
               })}
             </ul>
-          )) : tab === 'deals' ? (
+          )) : tab === 'files' ? (
+            <div>
+              {canEdit && (
+                <div className="flex flex-wrap items-center justify-between gap-3 px-5 pt-4">
+                  <p className="text-ink-muted">Quotes, ID proofs, recordings. PDF, images, Office files, CSV, text and audio up to 10 MB.</p>
+                  <input ref={fileInput} type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.txt,.mp3,.m4a,.wav,.mp4" onChange={(e) => upload(e.target.files)} aria-label="Choose a file" />
+                  <button className="btn-ghost btn-sm" disabled={uploading} onClick={() => fileInput.current?.click()}>{uploading ? <Spinner /> : <Upload className="h-3.5 w-3.5" />}Upload file</button>
+                </div>
+              )}
+              {!l.attachments.length ? <EmptyState icon={FileText} title="No files yet" text="Files you add here stay with the lead and are logged on its timeline." /> : (
+                <ul className="divide-y divide-ink/5">
+                  {l.attachments.map((a) => (
+                    <li key={a.id} className="flex flex-wrap items-center gap-3 px-5 py-3">
+                      <FileText className="h-4 w-4 shrink-0 text-ink-muted" />
+                      <span className="min-w-0 flex-1"><span className="block truncate font-medium">{a.name}</span><span className="text-[13px] text-ink-muted">{fileSize(a.size)} · {a.uploadedBy?.name ?? 'Unknown'} · {fmtDateTime(a.createdAt)}</span></span>
+                      <button className="btn-ghost btn-sm" onClick={() => downloadFile(`/attachments/${a.id}/download`, a.name).catch((e) => toast((e as Error).message, 'error'))}><Download className="h-3.5 w-3.5" />Download</button>
+                      {canEdit && <button className="btn-icon" onClick={() => removeFile(a)} aria-label={`Delete ${a.name}`}><Trash2 className="h-4 w-4" /></button>}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          ) : tab === 'deals' ? (
             <div>
               {canEdit && <div className="flex items-center justify-between gap-3 px-5 pt-4"><p className="text-ink-muted">{l.opportunities.length ? `${money(l.opportunities.filter((d) => d.status === 'WON').reduce((a, d) => a + d.value, 0), me?.organisation.currency)} won · ${money(l.opportunities.filter((d) => d.status === 'OPEN').reduce((a, d) => a + d.value, 0), me?.organisation.currency)} open` : 'Track each sale, upsell or renewal as its own deal.'}</p><button className="btn-ghost btn-sm" onClick={() => { setEditDeal(null); setDealOpen(true); }}><Plus className="h-3.5 w-3.5" />New deal</button></div>}
               {!l.opportunities.length ? <EmptyState icon={Handshake} title="No deals yet" text="A deal records the value you expect to close and feeds the forecast." /> : (

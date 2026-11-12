@@ -240,11 +240,26 @@ export class LeadsService {
     else if (f.ownerId === 'unassigned') and.push({ ownerId: null });
     else if (f.ownerId) and.push({ ownerId: f.ownerId });
     if (f.labelId) and.push({ labels: { some: { labelId: f.labelId } } });
-    if (f.listId) and.push({ lists: { some: { listId: f.listId } } });
+    if (f.listId) and.push(await this.listWhere(ctx, f.listId, defs));
     if (f.status) and.push({ stage: { type: f.status.toUpperCase() as 'OPEN' | 'WON' | 'LOST' } });
     if (f.createdFrom || f.createdTo) and.push({ createdAt: { gte: f.createdFrom, lte: f.createdTo } });
     if (f.closedFrom || f.closedTo) and.push({ stageEnteredAt: { gte: f.closedFrom, lte: f.closedTo }, stage: { type: { in: ['WON', 'LOST'] } } });
     return { organisationId: ctx.orgId, archivedAt: f.archived === 'true' ? { not: null } : null, AND: and };
+  }
+
+  /**
+   * A static list filters by membership. A dynamic list is a saved set of lead-list filters, so it is
+   * resolved into the same where-clause the list page would build (one level deep: lists cannot nest).
+   */
+  async listWhere(ctx: Ctx, listId: string, defs: FieldDef[]): Promise<Prisma.LeadWhereInput> {
+    const list = await this.prisma.leadList.findFirst({ where: { id: listId, organisationId: ctx.orgId } });
+    if (!list) return { id: '' };
+    if (list.kind !== 'DYNAMIC') return { lists: { some: { listId } } };
+    const raw = { ...((list.filters ?? {}) as Record<string, string>), listId: undefined, page: undefined, pageSize: undefined, sort: undefined, dir: undefined };
+    const r = listSchema.safeParse(raw);
+    if (!r.success) return { id: '' };
+    const inner = await this.where(ctx, r.data, raw, defs);
+    return { AND: [inner] };
   }
 
   async list(ctx: Ctx, query: unknown) {
@@ -480,7 +495,7 @@ export class LeadsService {
 
   async get(ctx: Ctx, id: string) {
     const lead = await this.find(ctx, id);
-    const [duplicates, tasks, opportunities, payments] = await Promise.all([
+    const [duplicates, tasks, opportunities, payments, attachments] = await Promise.all([
       this.duplicatesOf(ctx, lead.phoneNormalized, lead.email, lead.id),
       this.prisma.task.findMany({
         where: { leadId: id, organisationId: ctx.orgId },
@@ -492,8 +507,9 @@ export class LeadsService {
       ctx.perms.has('payments.view')
         ? this.prisma.payment.findMany({ where: { leadId: id, organisationId: ctx.orgId }, include: { opportunity: { select: { id: true, name: true } }, createdBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' }, take: 50 })
         : Promise.resolve([]),
+      this.prisma.leadAttachment.findMany({ where: { leadId: id, organisationId: ctx.orgId }, include: { uploadedBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' }, take: 50 }),
     ]);
-    return { ...serialize(lead), duplicates, tasks, opportunities: opportunities.map(serializeOpp), payments: payments.map(serializePayment) };
+    return { ...serialize(lead), duplicates, tasks, opportunities: opportunities.map(serializeOpp), payments: payments.map(serializePayment), attachments: attachments.map((a) => ({ id: a.id, leadId: a.leadId, name: a.name, mimeType: a.mimeType, size: a.size, createdAt: a.createdAt, uploadedBy: a.uploadedBy })) };
   }
 
   async update(ctx: Ctx, id: string, body: unknown) {
@@ -623,6 +639,7 @@ export class LeadsService {
       } else if (action === 'addToList' || action === 'removeFromList') {
         const list = value ? await tx.leadList.findFirst({ where: { id: value, organisationId: ctx.orgId } }) : null;
         if (!list) throw new BadRequestException('List not found');
+        if (list.kind === 'DYNAMIC') throw new BadRequestException('A dynamic list fills itself from its filters; leads cannot be added or removed by hand');
         if (action === 'addToList') {
           await tx.leadListMember.createMany({ data: found.map((leadId) => ({ listId: list.id, leadId, addedById: ctx.userId })), skipDuplicates: true });
           await tx.leadList.update({ where: { id: list.id }, data: { updatedAt: new Date() } });

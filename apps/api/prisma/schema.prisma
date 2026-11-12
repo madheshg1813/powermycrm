@@ -87,6 +87,7 @@ model Organisation {
   leadLists     LeadList[]
   opportunities Opportunity[]
   payments      Payment[]
+  attachments   LeadAttachment[]
   outboxEvents  OutboxEvent[]
   webhooks      WebhookEndpoint[]
   integrations  Integration[]
@@ -178,6 +179,7 @@ model User {
   notifications Notification[]
   ownedOpportunities Opportunity[] @relation("OpportunityOwner")
   createdPayments    Payment[]     @relation("PaymentCreator")
+  uploads            LeadAttachment[]
 }
 
 model Membership {
@@ -399,6 +401,7 @@ model Lead {
   lists        LeadListMember[]
   opportunities Opportunity[]
   payments      Payment[]
+  attachments  LeadAttachment[]
 
   @@index([organisationId, archivedAt, createdAt])
   @@index([organisationId, ownerId])
@@ -419,12 +422,20 @@ model LeadLabel {
   @@index([labelId])
 }
 
-/// A static, hand-picked set of leads (a calling list, a campaign batch). Membership only changes when a user changes it.
+enum ListKind {
+  STATIC
+  DYNAMIC
+}
+
+/// A set of leads. STATIC lists are hand-picked (a calling list, a campaign batch) and change only when a user changes
+/// them. DYNAMIC lists are saved filters evaluated live, so a lead joins or leaves as its data changes.
 model LeadList {
   id             String   @id @default(cuid())
   organisationId String
   name           String
   description    String?
+  kind           ListKind @default(STATIC)
+  filters        Json?
   createdById    String?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
@@ -433,6 +444,26 @@ model LeadList {
   members      LeadListMember[]
 
   @@unique([organisationId, name])
+}
+
+/// A file on a lead. Bytes live in StorageService (local disk now, S3-compatible later); this is the metadata.
+model LeadAttachment {
+  id             String   @id @default(cuid())
+  organisationId String
+  leadId         String
+  name           String
+  mimeType       String
+  size           Int
+  storageKey     String   @unique
+  uploadedById   String?
+  createdAt      DateTime @default(now())
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  lead         Lead         @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  uploadedBy   User?        @relation(fields: [uploadedById], references: [id], onDelete: SetNull)
+
+  @@index([leadId, createdAt])
+  @@index([organisationId])
 }
 
 model LeadListMember {

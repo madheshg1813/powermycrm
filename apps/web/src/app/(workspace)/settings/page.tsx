@@ -330,7 +330,7 @@ function LeadLists() {
 
   return (
     <section className="card">
-      <div className="card-pad pb-3"><h2 className="card-title">Lead lists</h2><p className="text-ink-muted">Hand-picked sets of leads, such as a calling list or a campaign batch. Add leads from the Leads page by selecting them and choosing &ldquo;Add to list&rdquo;. Deleting a list never deletes its leads.</p></div>
+      <div className="card-pad pb-3"><h2 className="card-title">Lead lists</h2><p className="text-ink-muted">Static lists are hand-picked: select leads on the Leads page and choose &ldquo;Add to list&rdquo;. Dynamic lists are saved filters that stay up to date on their own: set filters on the Leads page, then &ldquo;Save current filters as a dynamic list&rdquo; from the Views menu. Deleting a list never deletes its leads.</p></div>
       {!ready ? <Skeleton rows={3} /> : (
         <ul className="divide-y divide-ink/5 border-y border-ink/10">
           {lists.map((l) => (
@@ -344,8 +344,9 @@ function LeadLists() {
               ) : (
                 <div className="flex flex-wrap items-center gap-3">
                   <span className="min-w-0 flex-1">
-                    <span className="font-medium">{l.name}</span>
+                    <span className="font-medium">{l.name}</span>{l.kind === 'DYNAMIC' && <span className="pill-muted ml-2" title="Fills itself from saved filters">Dynamic</span>}
                     {l.description && <span className="block truncate text-[13px] text-ink-muted">{l.description}</span>}
+                    {l.kind === 'DYNAMIC' && l.filters && <span className="block truncate text-[12px] text-ink-faint">{Object.entries(l.filters).filter(([, v]) => v).map(([k, v]) => k + '=' + v).join(' · ')}</span>}
                   </span>
                   <Link href={`/leads?listId=${l.id}`} className="text-[13px] text-ink-muted hover:text-ink hover:underline">{l.leads} lead{l.leads === 1 ? '' : 's'}</Link>
                   {manages(l) && (

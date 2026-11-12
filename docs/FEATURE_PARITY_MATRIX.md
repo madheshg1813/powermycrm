@@ -22,7 +22,8 @@ the browser, **None** = untested. Rows marked (ext) go beyond what TeleCRM docum
 | Lead scoring | /lead-management-system | Manual 0–100 score, sortable. No rules | Backend In Progress | API |
 | Labels | /crm-with-dialer | Colour labels, filter, bulk add/remove | Testing | API; screen None |
 | Duplicate clean-up | /call-center-crm | Detection on phone/email at create and import, merge | Testing | API; screen None |
-| Filtered calling lists | /crm-with-dialer | Static lists: create, add/remove selected leads in bulk, filter the lead list by list, list chips on the lead page, manage in Settings. Dynamic (rule-based) lists not built | Testing | API + Manual (API smoke test; screens checked by hand) |
+| Filtered calling lists | /crm-with-dialer | Static lists (bulk add/remove) and dynamic lists (saved filters evaluated live); filter the lead list by list, list chips on the lead page, manage in Settings | Testing | API + Manual |
+| Lead files (ext) | — | Upload, download, delete files on a lead; allow-listed types, 10 MB each, 50 per lead; local-disk storage adapter | Testing | API + Manual |
 | Lead history timeline | /crm-with-dialer | Timeline of creation, edits, stage, owner, notes, tasks, merge | Completed | API + Manual |
 | Role-based access | /crm-with-dialer | 14 permissions, own/team/all scope, custom roles | Testing | API; screen None |
 | Follow-up reminders | /features 2.7 | Tasks with due time, today/overdue/upcoming. No reminder delivery | Frontend In Progress | API; screen None |

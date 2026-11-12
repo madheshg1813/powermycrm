@@ -13,7 +13,7 @@
 - The Kanban board loads the 200 most recently active leads per pipeline.
 - Export is capped at 50,000 rows per file.
 - Custom fields have no file-upload type or per-role visibility, and a field's type cannot be changed after creation. Sorting the lead list by a custom field orders the matching rows in the API process (capped at 50,000 rows) because JSON values are not indexed; built-in columns sort in the database.
-- Lead lists are static only: membership changes when a user adds or removes leads. No rule-based (dynamic) lists and no lead attachments yet.
+- Lead files are stored on the API server's local disk (`STORAGE_DIR`). Running more than one API instance or deploying to a platform without persistent disk needs the S3-compatible storage adapter, which is not written yet. Files are not virus-scanned; executables and archives are refused by extension.
 - Assignment rules are round-robin only (per source or all sources). They run when the owner is set to "Auto-assign by rule"; nothing creates leads automatically yet because integrations are not built.
 - Payments are recorded by hand. Payment links, online collection and reconciliation need a gateway integration (Razorpay is designed, not connected). Reports and the dashboard still use the lead's own deal value and won/lost stage, not deals or payments.
 - Reports export to CSV only (no Excel), cover at most one year per query, and have no custom report builder or scheduled delivery. "Won" and "lost" are counted on the day a lead entered its current closing stage, so a lead moved from Won back to an open stage no longer counts as won.

@@ -60,11 +60,12 @@ function CustomFilters({ fields, cf, onChange }: { fields: CustomField[]; cf: Cf
   );
 }
 
-/** Named filter sets. A view is private unless its creator shares it with the workspace. */
-function SavedViews({ current, canSave, onApply }: { current: Record<string, string>; canSave: boolean; onApply: (f: Record<string, string>) => void }) {
+/** Named filter sets. A view is private unless its creator shares it with the workspace; a dynamic list is the same filters shared as a live list. */
+function SavedViews({ current, canSave, onApply, onListCreated }: { current: Record<string, string>; canSave: boolean; onApply: (f: Record<string, string>) => void; onListCreated?: () => void }) {
   const { toast } = useUi();
   const views = useApi<SavedView[]>('/saved-filters');
   const [saving, setSaving] = useState(false);
+  const [asList, setAsList] = useState(false);
   const [name, setName] = useState('');
   const [shared, setShared] = useState(false);
   const [error, setError] = useState('');
@@ -73,9 +74,17 @@ function SavedViews({ current, canSave, onApply }: { current: Record<string, str
     e.preventDefault();
     setError('');
     try {
-      const filters = Object.fromEntries(Object.entries(current).filter(([, v]) => v));
-      await api('/saved-filters', { body: { name, shared, filters } });
-      toast('View saved');
+      const filters = Object.fromEntries(Object.entries(current).filter(([, v]) => v && v !== 'all'));
+      if (asList) {
+        const { view, ...rest } = filters;
+        const listFilters = { ...rest, ...(view === 'mine' ? { ownerId: 'me' } : view === 'unassigned' ? { ownerId: 'unassigned' } : view === 'archived' ? { archived: 'true' } : {}) };
+        await api('/lists', { body: { name, kind: 'DYNAMIC', filters: listFilters } });
+        toast('Dynamic list created');
+        onListCreated?.();
+      } else {
+        await api('/saved-filters', { body: { name, shared, filters } });
+        toast('View saved');
+      }
       setSaving(false);
       setName('');
       setShared(false);
@@ -103,17 +112,19 @@ function SavedViews({ current, canSave, onApply }: { current: Record<string, str
               ))}
             </div>
             <div className="mt-1 border-t border-ink/10 pt-1">
-              <button className="menu-item font-semibold" disabled={!canSave} onClick={() => { close(); setSaving(true); }}><Plus className="h-4 w-4" />Save current filters as a view</button>
+              <button className="menu-item font-semibold" disabled={!canSave} onClick={() => { close(); setAsList(false); setSaving(true); }}><Plus className="h-4 w-4" />Save current filters as a view</button>
+              <button className="menu-item font-semibold" disabled={!canSave} onClick={() => { close(); setAsList(true); setSaving(true); }}><ListPlus className="h-4 w-4" />Save current filters as a dynamic list</button>
             </div>
           </>
         )}
       </Dropdown>
-      <Modal open={saving} onClose={() => setSaving(false)} title="Save view"
-        footer={<><button className="btn-ghost" onClick={() => setSaving(false)}>Cancel</button><button className="btn-primary" disabled={!name.trim()} onClick={save}>Save view</button></>}>
+      <Modal open={saving} onClose={() => setSaving(false)} title={asList ? 'Save as dynamic list' : 'Save view'}
+        footer={<><button className="btn-ghost" onClick={() => setSaving(false)}>Cancel</button><button className="btn-primary" disabled={!name.trim()} onClick={save}>{asList ? 'Create list' : 'Save view'}</button></>}>
         <form className="space-y-3.5" onSubmit={save}>
           {error && <p className="rounded-xl bg-danger-soft px-3 py-2 text-danger" role="alert">{error}</p>}
-          <Field label="View name"><input className="input" value={name} onChange={(e) => setName(e.target.value)} autoFocus maxLength={60} placeholder="Hot Facebook leads" /></Field>
-          <label className="flex cursor-pointer items-center gap-2.5"><input type="checkbox" checked={shared} onChange={(e) => setShared(e.target.checked)} /><span>Share with everyone in this workspace</span></label>
+          {asList && <p className="text-ink-muted">A dynamic list keeps itself up to date: any lead matching these filters is in it, and leaves when it stops matching. Everyone in the workspace can use it.</p>}
+          <Field label={asList ? 'List name' : 'View name'}><input className="input" value={name} onChange={(e) => setName(e.target.value)} autoFocus maxLength={60} placeholder={asList ? 'Open leads from Facebook' : 'Hot Facebook leads'} /></Field>
+          {!asList && <label className="flex cursor-pointer items-center gap-2.5"><input type="checkbox" checked={shared} onChange={(e) => setShared(e.target.checked)} /><span>Share with everyone in this workspace</span></label>}
         </form>
       </Modal>
     </>
@@ -297,7 +308,7 @@ export default function LeadsPage() {
         {lists.length > 0 && (
           <select className="input w-auto" value={filters.listId} onChange={setFilter('listId')} aria-label="List">
             <option value="">All lists</option>
-            {lists.map((l) => <option key={l.id} value={l.id}>{l.name} ({l.leads})</option>)}
+            {lists.map((l) => <option key={l.id} value={l.id}>{l.kind === 'DYNAMIC' ? '⟳ ' : ''}{l.name} ({l.leads})</option>)}
           </select>
         )}
         {(filters.createdFrom || filters.createdTo) && (
@@ -327,6 +338,7 @@ export default function LeadsPage() {
         <SavedViews
           current={{ ...cf, ...filters, view }}
           canSave={activeFilters > 0 || !!filters.q || view !== 'all'}
+          onListCreated={() => reloadRefs()}
           onApply={(v) => {
             const f = { ...noFilters };
             (Object.keys(noFilters) as (keyof Filters)[]).forEach((k) => { if (v[k]) f[k] = v[k]; });
@@ -376,13 +388,13 @@ export default function LeadsPage() {
                   <Dropdown align="left" trigger={() => <button className="btn-on-ink btn-sm"><ListPlus className="h-3.5 w-3.5" />Add to list</button>}>
                     {(close) => (
                       <div className="max-h-64 overflow-y-auto text-ink">
-                        {lists.map((l) => <button key={l.id} className="menu-item" onClick={() => { close(); bulk('addToList', l.id, `added to ${l.name}`); }}><span className="min-w-0 flex-1 truncate">{l.name}</span><span className="text-xs text-ink-muted">{l.leads}</span></button>)}
-                        {lists.length > 0 && <div className="my-1 border-t border-ink/10" />}
+                        {lists.filter((l) => l.kind !== 'DYNAMIC').map((l) => <button key={l.id} className="menu-item" onClick={() => { close(); bulk('addToList', l.id, `added to ${l.name}`); }}><span className="min-w-0 flex-1 truncate">{l.name}</span><span className="text-xs text-ink-muted">{l.leads}</span></button>)}
+                        {lists.some((l) => l.kind !== 'DYNAMIC') && <div className="my-1 border-t border-ink/10" />}
                         <button className="menu-item font-semibold" onClick={() => { close(); setNewList(true); }}><Plus className="h-4 w-4" />New list…</button>
                       </div>
                     )}
                   </Dropdown>
-                  {filters.listId && (
+                  {filters.listId && lists.find((l) => l.id === filters.listId)?.kind !== 'DYNAMIC' && (
                     <button className="btn-on-ink btn-sm" onClick={() => bulk('removeFromList', filters.listId, `removed from ${lists.find((l) => l.id === filters.listId)?.name ?? 'the list'}`)}><ListMinus className="h-3.5 w-3.5" />Remove from list</button>
                   )}
                 </>

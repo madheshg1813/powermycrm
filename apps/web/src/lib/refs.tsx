@@ -15,7 +15,8 @@ export type CustomField = { id: string; key: string; label: string; type: 'TEXT'
 export const FIELD_TYPES: Record<CustomField['type'], string> = {
   TEXT: 'Text', LONG_TEXT: 'Long text', NUMBER: 'Number', DATE: 'Date', DROPDOWN: 'Dropdown', MULTI_SELECT: 'Multi-select', CHECKBOX: 'Checkbox', URL: 'Link', EMAIL: 'Email', PHONE: 'Phone',
 };
-export type LeadList = { id: string; name: string; description: string | null; leads: number; mine: boolean; updatedAt?: string };
+export type LeadList = { id: string; name: string; description: string | null; kind: 'STATIC' | 'DYNAMIC'; filters: Record<string, string> | null; leads: number; mine: boolean; updatedAt?: string };
+export type Attachment = { id: string; leadId: string; name: string; mimeType: string; size: number; createdAt: string; uploadedBy: { id: string; name: string } | null };
 export type Lead = {
   customFields: Record<string, any>;
   lists: { id: string; name: string }[];

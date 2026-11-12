@@ -39,7 +39,8 @@ The organisation is always taken from the token, never from the request.
 | GET/POST `/custom-fields`, PATCH/DELETE `/custom-fields/:id`, POST `/custom-fields/reorder` | — / `pipeline.manage` | Admin-defined lead fields |
 | GET/POST `/saved-filters`, DELETE `/saved-filters/:id` | `leads.view` | Saved views of the lead list |
 | GET `/assignment-rules`; POST/PATCH/DELETE `/assignment-rules[/:id]` | `leads.assign` / `settings.manage` | Round-robin rules |
-| GET/POST `/lists`, PATCH/DELETE `/lists/:id`, POST `/lists/:id/leads`, POST `/lists/:id/leads/remove` | `leads.view` / `leads.edit` | Static lead lists; counts follow record scope |
+| GET/POST `/lists`, PATCH/DELETE `/lists/:id`, POST `/lists/:id/leads`, POST `/lists/:id/leads/remove` | `leads.view` / `leads.edit` | Lead lists. `kind: STATIC` (membership) or `DYNAMIC` (`filters` = lead-list query parameters, evaluated live; manual add/remove refused); counts follow record scope |
+| GET/POST `/leads/:id/attachments` (multipart `file`), GET `/attachments/:id/download`, DELETE `/attachments/:id` | `leads.view` / `leads.edit` | Lead files, 10 MB each |
 | GET `/reports/summary`, `/reports/agents`, `/reports/sources`, `/reports/follow-ups` | `reports.view` | Query: `from, to (YYYY-MM-DD), unit (hour, day, week, month), ownerId, sourceId`; figures in the organisation timezone |
 | GET `/reports/export?report=` | `reports.view` | CSV of `summary, agents, sources, followups` |
 | GET/POST `/opportunities`, GET `/opportunities/forecast?months=`, GET/PATCH/DELETE `/opportunities/:id` | `leads.view` / `leads.edit` / `leads.delete` | Deals per lead; PATCH `status` WON/LOST/OPEN with `lostReason` |

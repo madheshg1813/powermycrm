@@ -10,3 +10,6 @@ for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
 if (!/_test(\?|$)/.test(process.env.DATABASE_URL || '')) {
   throw new Error('Refusing to run tests: DATABASE_URL in .env.test must point at a *_test database');
 }
+
+// Uploaded files go to a throwaway directory during tests.
+process.env.STORAGE_DIR = require('path').join(require('os').tmpdir(), 'powermycrm-test-uploads');

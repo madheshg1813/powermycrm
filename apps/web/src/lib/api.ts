@@ -62,6 +62,30 @@ export async function api<T = any>(path: string, opts: Options = {}, retried = f
   return (opts.text ? res.text() : res.json()) as Promise<T>;
 }
 
+/** Fetches a file through the API with the session token and hands it to the browser as a download. */
+export async function downloadFile(path: string, filename: string) {
+  const res = await fetch(`/api/v1${path}`, { credentials: 'include', headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {} });
+  if (res.status === 401 && (await refreshSession())) return downloadFile(path, filename);
+  if (!res.ok) throw new ApiError(res.status, 'Could not download the file');
+  const url = URL.createObjectURL(await res.blob());
+  const a = Object.assign(document.createElement('a'), { href: url, download: filename });
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/** Uploads one file as multipart form data. */
+export async function uploadFile<T = any>(path: string, file: File, field = 'file'): Promise<T> {
+  const form = new FormData();
+  form.append(field, file, file.name);
+  const res = await fetch(`/api/v1${path}`, { method: 'POST', credentials: 'include', headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {}, body: form });
+  if (res.status === 401 && (await refreshSession())) return uploadFile<T>(path, file, field);
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new ApiError(res.status, data?.message || (res.status === 413 ? 'The file is too large (10 MB maximum)' : `Upload failed (${res.status})`), data);
+  }
+  return res.json() as Promise<T>;
+}
+
 /** Loads a GET endpoint and keeps it in state. Pass null to skip. */
 export function useApi<T = any>(path: string | null) {
   const [data, setData] = useState<T | null>(null);

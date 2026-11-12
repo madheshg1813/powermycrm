@@ -838,6 +838,68 @@ describe('lead lists', () => {
   });
 });
 
+describe('attachments', () => {
+  it('uploads, lists, downloads and deletes files on a lead within scope', async () => {
+    const o = await registerOrg('Files');
+    const agent = await addMember(o, 'Sales Agent');
+    const lead = (await o.post('/leads', { name: 'Filed Lead', phone: '9123400001' })).body;
+    const pdf = Buffer.from('%PDF-1.4\n%fake quote document\n%%EOF');
+    const up = await o.agent.post(`/api/v1/leads/${lead.id}/attachments`).set('Authorization', `Bearer ${o.token}`).attach('file', pdf, 'Quote #12.pdf');
+    expect(up.status).toBe(201);
+    expect(up.body).toMatchObject({ name: 'Quote #12.pdf', mimeType: 'application/pdf', size: pdf.length, uploadedBy: { name: 'Owner One' } });
+    expect((await o.agent.post(`/api/v1/leads/${lead.id}/attachments`).set('Authorization', `Bearer ${o.token}`).attach('file', Buffer.from('MZ'), 'virus.exe')).status).toBe(400);
+    expect((await o.agent.post(`/api/v1/leads/${lead.id}/attachments`).set('Authorization', `Bearer ${o.token}`)).status).toBe(400);
+    expect((await o.agent.post(`/api/v1/leads/${lead.id}/attachments`).set('Authorization', `Bearer ${o.token}`).attach('file', Buffer.alloc(11 * 1024 * 1024), 'big.pdf')).status).toBeGreaterThanOrEqual(400);
+    const list = (await o.get(`/leads/${lead.id}/attachments`)).body;
+    expect(list).toHaveLength(1);
+    expect((await o.get(`/leads/${lead.id}`)).body.attachments).toHaveLength(1);
+    const dl = await o.get(`/attachments/${up.body.id}/download`).buffer(true).parse((res, cb) => { const chunks: Buffer[] = []; res.on('data', (c: Buffer) => chunks.push(c)); res.on('end', () => cb(null, Buffer.concat(chunks))); });
+    expect(dl.status).toBe(200);
+    expect(dl.headers['content-type']).toBe('application/pdf');
+    expect(Buffer.compare(dl.body as Buffer, pdf)).toBe(0);
+    expect((await o.get(`/leads/${lead.id}/activities`)).body.map((a: any) => a.type)).toContain('attachment_added');
+    // The agent cannot see the owner's lead or its file; another workspace cannot either.
+    expect((await agent.get(`/leads/${lead.id}/attachments`)).status).toBe(404);
+    expect((await agent.get(`/attachments/${up.body.id}/download`)).status).toBe(404);
+    expect((await agent.del(`/attachments/${up.body.id}`)).status).toBe(404);
+    const other = await registerOrg('FilesOther');
+    expect((await other.get(`/attachments/${up.body.id}/download`)).status).toBe(404);
+    expect((await o.del(`/attachments/${up.body.id}`)).status).toBe(200);
+    expect((await o.get(`/attachments/${up.body.id}/download`)).status).toBe(404);
+    expect((await o.get(`/leads/${lead.id}/attachments`)).body).toHaveLength(0);
+  });
+});
+
+describe('dynamic lists', () => {
+  it('evaluates saved filters live and refuses manual membership changes', async () => {
+    const o = await registerOrg('DynLists');
+    const stages = (await o.get('/pipelines')).body[0].stages;
+    const won = stages.find((s: any) => s.name === 'Won').id;
+    const sources = (await o.get('/sources')).body;
+    const l1 = (await o.post('/leads', { name: 'Dyn One', phone: '9321100001', sourceId: sources[0].id })).body;
+    const l2 = (await o.post('/leads', { name: 'Dyn Two', phone: '9321100002', sourceId: sources[0].id, stageId: won })).body;
+    await o.post('/leads', { name: 'Dyn Three', phone: '9321100003', sourceId: sources[1].id, stageId: won });
+    expect((await o.post('/lists', { name: 'Empty rule', kind: 'DYNAMIC', filters: {} })).status).toBe(400);
+    const dyn = await o.post('/lists', { name: 'Won from first source', kind: 'DYNAMIC', filters: { status: 'won', sourceId: sources[0].id } });
+    expect(dyn.status).toBe(201);
+    expect(dyn.body).toMatchObject({ kind: 'DYNAMIC', leads: 1 });
+    expect((await o.get(`/leads?listId=${dyn.body.id}`)).body.items.map((l: any) => l.name)).toEqual(['Dyn Two']);
+    // Membership follows the data: winning another lead adds it, no one has to maintain the list.
+    await o.patch(`/leads/${l1.id}`, { stageId: won });
+    expect((await o.get(`/leads?listId=${dyn.body.id}`)).body.total).toBe(2);
+    expect((await o.get('/lists')).body.find((l: any) => l.id === dyn.body.id).leads).toBe(2);
+    expect((await o.post(`/lists/${dyn.body.id}/leads`, { ids: [l2.id] })).status).toBe(400);
+    expect((await o.post('/leads/bulk', { ids: [l2.id], action: 'addToList', value: dyn.body.id })).status).toBe(400);
+    // Filters can be changed; a static list cannot be given filters; a dynamic list cannot nest another list.
+    expect((await o.patch(`/lists/${dyn.body.id}`, { filters: { status: 'open' } })).status).toBe(200);
+    expect((await o.get(`/leads?listId=${dyn.body.id}`)).body.items.map((l: any) => l.name)).toEqual([]);
+    const stat = (await o.post('/lists', { name: 'Static one' })).body;
+    expect((await o.patch(`/lists/${stat.id}`, { filters: { status: 'won' } })).status).toBe(400);
+    await o.patch(`/lists/${dyn.body.id}`, { filters: { listId: stat.id } });
+    expect((await o.get(`/leads?listId=${dyn.body.id}`)).body.total).toBe(3); // the nested listId is ignored, leaving no filter
+  });
+});
+
 describe('assignment rules', () => {
   it('distributes leads round-robin, prefers a source rule and skips deactivated users', async () => {
     const o = await registerOrg('Rules');
