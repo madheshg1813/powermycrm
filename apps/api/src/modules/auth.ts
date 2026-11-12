@@ -22,6 +22,7 @@ import type { Request, Response } from 'express';
 import * as jwt from 'jsonwebtoken';
 import { z } from 'zod';
 import { Context, Ctx, PrismaService, Public, jwtSecret, parse, randomToken, sha256 } from '../common/core';
+import { DEFAULT_DISPOSITIONS } from './calls';
 import { EmailService, layout } from './email';
 import { DEFAULT_LABELS, DEFAULT_SOURCES, DEFAULT_STAGES, SYSTEM_ROLES } from '../common/permissions';
 
@@ -61,6 +62,7 @@ export async function seedOrganisation(tx: Tx, organisationId: string): Promise<
   });
   await tx.leadSource.createMany({ data: DEFAULT_SOURCES.map((name) => ({ organisationId, name })) });
   await tx.label.createMany({ data: DEFAULT_LABELS.map((l) => ({ organisationId, ...l })) });
+  await tx.callDisposition.createMany({ data: DEFAULT_DISPOSITIONS.map((name, position) => ({ organisationId, name, position })) });
   return ownerRoleId;
 }
 

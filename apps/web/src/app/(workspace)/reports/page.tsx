@@ -16,7 +16,7 @@ type Summary = {
   totals: { created: number; won: number; lost: number; wonValue: number; conversion: number | null; avgWonValue: number | null; openNow: number };
   series: { bucket: string; fromAt?: string; toAt?: string; created: number; won: number; lost: number; wonValue: number }[];
 };
-type AgentRow = { id: string | null; name: string; active: boolean; created: number; won: number; lost: number; wonValue: number; open: number; conversion: number | null; tasksCompleted: number; tasksOnTime: number; tasksOverdue: number; notes: number };
+type AgentRow = { id: string | null; name: string; active: boolean; created: number; won: number; lost: number; wonValue: number; open: number; conversion: number | null; tasksCompleted: number; tasksOnTime: number; tasksOverdue: number; notes: number; calls: number; talkTimeSec: number };
 type SourceRow = { id: string | null; name: string; created: number; won: number; lost: number; wonValue: number; open: number; conversion: number | null };
 type FuMeasures = { due: number; completed: number; onTime: number; cancelled: number; overdue: number; upcoming: number };
 type FollowUps = { range: Range; totals: FuMeasures; rows: ({ id: string; name: string; active: boolean } & FuMeasures)[]; byType: ({ type: string } & FuMeasures)[] };
@@ -215,7 +215,7 @@ export default function ReportsPage() {
           {state(agents) ?? (
             <div className="overflow-x-auto">
               <table className="table">
-                <thead><tr><th className="pl-5">#</th><th>Agent</th><th className="text-right">Created</th><th className="text-right">Won</th><th className="text-right">Lost</th><th className="text-right">Conversion</th><th className="text-right">Won value</th><th className="text-right">Open now</th><th className="text-right">Follow-ups done</th><th className="text-right">On time</th><th className="text-right">Overdue</th><th className="pr-5 text-right">Notes</th></tr></thead>
+                <thead><tr><th className="pl-5">#</th><th>Agent</th><th className="text-right">Created</th><th className="text-right">Won</th><th className="text-right">Lost</th><th className="text-right">Conversion</th><th className="text-right">Won value</th><th className="text-right">Open now</th><th className="text-right">Follow-ups done</th><th className="text-right">On time</th><th className="text-right">Overdue</th><th className="text-right">Notes</th><th className="text-right">Calls</th><th className="pr-5 text-right">Talk time</th></tr></thead>
                 <tbody>
                   {agents.data!.rows.map((r, i) => (
                     <tr key={r.id ?? 'none'}>
@@ -225,7 +225,7 @@ export default function ReportsPage() {
                       <td className="text-right">{r.won && r.id ? <Link className="hover:underline" href={drill({ ownerId: r.id, status: 'won', closedFrom: agents.data!.range.fromAt, closedTo: agents.data!.range.toAt })}>{n(r.won)}</Link> : n(r.won)}</td>
                       <td className="text-right">{n(r.lost)}</td><td className="text-right">{pct(r.conversion)}</td><td className="text-right">{money(r.wonValue, cur)}</td><td className="text-right">{n(r.open)}</td>
                       <td className="text-right">{n(r.tasksCompleted)}</td><td className="text-right">{r.tasksCompleted ? `${Math.round((r.tasksOnTime / r.tasksCompleted) * 100)}%` : '—'}</td>
-                      <td className={cx('text-right', r.tasksOverdue > 0 && 'font-semibold text-danger')}>{n(r.tasksOverdue)}</td><td className="pr-5 text-right">{n(r.notes)}</td>
+                      <td className={cx('text-right', r.tasksOverdue > 0 && 'font-semibold text-danger')}>{n(r.tasksOverdue)}</td><td className="text-right">{n(r.notes)}</td><td className="text-right">{n(r.calls)}</td><td className="pr-5 text-right">{r.talkTimeSec ? `${Math.round(r.talkTimeSec / 60)} min` : '—'}</td>
                     </tr>
                   ))}
                 </tbody>

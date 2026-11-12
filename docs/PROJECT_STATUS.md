@@ -20,7 +20,9 @@ PowerMyCRM is **not** at feature parity with TeleCRM and is not production-ready
 | 6 | Job queue and outbox | Completed: pg-boss on PostgreSQL in-process, outbox events, signed outbound webhooks with retries and a delivery log |
 | 7 | Integration framework | Framework completed (Integration, IntegrationEvent, encrypted credentials, inbound worker, event log with retry). Providers: website forms and the API-key lead-capture API. Every third-party provider is awaiting credentials |
 | 11 | Payments | Manual payment records (expected, received, failed, refunded), totals, Payments page. No payment gateway yet |
-| 8–10, 12–18 | Calling, WhatsApp, SMS/email, automation, AI, super admin, mobile app, production deployment | Not started |
+| 8 | Calling | Call log (manual logging with outcomes, duration, notes, callback scheduling; click-to-call opens the phone app and the log dialog). Telephony providers, recordings and live dialling need a provider account |
+| 10 | Automation | Completed: trigger + conditions + ordered steps (assign, stage, label, list, follow-up, notify, email, webhook, update field, archive, wait) with per-run logs and "run on this lead" |
+| 9, 12–18 | WhatsApp, SMS, AI, super admin, mobile app, production deployment | Not started |
 
 ## What works today
 
@@ -39,6 +41,8 @@ PowerMyCRM is **not** at feature parity with TeleCRM and is not production-ready
 - Webhooks: admins register endpoints per event type, receive HMAC-SHA256 signed JSON, see every delivery attempt with its HTTP status, retry by hand, send test events, pause and rotate secrets.
 - Website forms: each form integration has an endpoint and token; submissions (JSON or form-encoded) are stored as integration events, processed by the worker into leads with field mapping, source, de-duplication strategy and rule-based assignment; honeypot and duplicate-request protection; event log with retry; optional thank-you redirect.
 - Public lead-capture API: bearer API keys (shown once, hashed at rest, revocable) for `POST /api/v1/public/leads`.
+- Calls: log outbound and inbound calls per lead with outcome (workspace-defined list), duration, notes and an optional callback; the Call button opens the phone app then the log dialog; call counts and talk time on the agent leaderboard.
+- Automations (Settings → Automations): when a lead is created, moved, assigned or archived, a deal is won or lost, a payment is received, a follow-up is completed or a call is logged, check conditions (source, stage, owner, label, city, company, value, score, custom fields, previous stage, amount, call outcome) and run steps in order: assign (user, rule or unassign), move stage, add/remove label, add to list, create follow-up, notify a user, send email, call a webhook, update a field, archive, wait. Every run is logged step by step; one automation runs at most once per lead per ten minutes; "Run on a lead" tests it immediately.
 - Dashboard with live figures; global search; in-app notifications; audit log (API).
 - Settings: profile, password, devices, organisation, stages, pipelines, sources, labels.
 
@@ -59,7 +63,7 @@ workspace login is recorded in `.env.local` (git-ignored).
 ## Next tasks, in order
 
 1. Done in session 3: static lead lists; reports; custom-field filters, sort and columns; deals with forecast; payments; job queue, outbox, webhooks, website forms, the public API, SMTP email delivery and email verification.
-2. Call logging, workflow automation, super-admin panel, installable PWA. (Lead files and dynamic lists are done.)
+2. Super-admin panel, installable PWA. (Call logging, automations, lead files and dynamic lists are done.)
 3. Conditional assignment rules; S3 storage adapter for production.
 4. Won/lost reasons, forecasting, stage SLA and ageing.
 5. Calendar view, recurring tasks, reminder scheduler (needs the job queue).

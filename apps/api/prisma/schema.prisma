@@ -88,6 +88,9 @@ model Organisation {
   opportunities Opportunity[]
   payments      Payment[]
   attachments   LeadAttachment[]
+  calls         Call[]
+  dispositions  CallDisposition[]
+  automations   Automation[]
   outboxEvents  OutboxEvent[]
   webhooks      WebhookEndpoint[]
   integrations  Integration[]
@@ -180,6 +183,7 @@ model User {
   ownedOpportunities Opportunity[] @relation("OpportunityOwner")
   createdPayments    Payment[]     @relation("PaymentCreator")
   uploads            LeadAttachment[]
+  calls              Call[]
 }
 
 model Membership {
@@ -402,6 +406,7 @@ model Lead {
   opportunities Opportunity[]
   payments      Payment[]
   attachments  LeadAttachment[]
+  calls        Call[]
 
   @@index([organisationId, archivedAt, createdAt])
   @@index([organisationId, ownerId])
@@ -444,6 +449,112 @@ model LeadList {
   members      LeadListMember[]
 
   @@unique([organisationId, name])
+}
+
+enum CallDirection {
+  OUTBOUND
+  INBOUND
+}
+
+enum CallStatus {
+  COMPLETED
+  NO_ANSWER
+  BUSY
+  FAILED
+  CANCELLED
+  MISSED
+}
+
+/// A phone call with a lead. Logged by hand today; telephony providers will create them from webhooks.
+model Call {
+  id             String        @id @default(cuid())
+  organisationId String
+  leadId         String?
+  userId         String
+  direction      CallDirection @default(OUTBOUND)
+  status         CallStatus    @default(COMPLETED)
+  phone          String?
+  startedAt      DateTime      @default(now())
+  durationSec    Int?
+  dispositionId  String?
+  notes          String?
+  provider       String?
+  providerRef    String?
+  recordingUrl   String?
+  createdAt      DateTime      @default(now())
+
+  organisation Organisation     @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  lead         Lead?            @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  user         User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  disposition  CallDisposition? @relation(fields: [dispositionId], references: [id], onDelete: SetNull)
+
+  @@index([organisationId, startedAt])
+  @@index([organisationId, userId, startedAt])
+  @@index([leadId, startedAt])
+}
+
+/// Outcome labels for calls, per organisation ("Interested", "Call back later"...).
+model CallDisposition {
+  id             String @id @default(cuid())
+  organisationId String
+  name           String
+  position       Int    @default(0)
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  calls        Call[]
+
+  @@unique([organisationId, name])
+}
+
+enum RunStatus {
+  RUNNING
+  WAITING
+  DONE
+  FAILED
+  SKIPPED
+}
+
+/// A workflow: trigger event + conditions + ordered steps. Runs are recorded with a per-step log.
+model Automation {
+  id             String    @id @default(cuid())
+  organisationId String
+  name           String
+  description    String?
+  trigger        String
+  conditions     Json      @default("[]")
+  steps          Json      @default("[]")
+  active         Boolean   @default(true)
+  runs           Int       @default(0)
+  lastRunAt      DateTime?
+  createdById    String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organisation Organisation    @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  history      AutomationRun[]
+
+  @@index([organisationId, trigger, active])
+}
+
+model AutomationRun {
+  id             String    @id @default(cuid())
+  organisationId String
+  automationId   String
+  leadId         String?
+  eventId        String?
+  status         RunStatus @default(RUNNING)
+  step           Int       @default(0)
+  log            Json      @default("[]")
+  error          String?
+  startedAt      DateTime  @default(now())
+  resumeAt       DateTime?
+  finishedAt     DateTime?
+
+  automation Automation   @relation(fields: [automationId], references: [id], onDelete: Cascade)
+  event      OutboxEvent? @relation(fields: [eventId], references: [id], onDelete: SetNull)
+
+  @@index([automationId, startedAt])
+  @@index([organisationId, leadId, startedAt])
 }
 
 /// A file on a lead. Bytes live in StorageService (local disk now, S3-compatible later); this is the metadata.
@@ -576,6 +687,7 @@ model OutboxEvent {
 
   organisation Organisation      @relation(fields: [organisationId], references: [id], onDelete: Cascade)
   deliveries   WebhookDelivery[]
+  runs         AutomationRun[]
 
   @@index([dispatchedAt, createdAt])
   @@index([organisationId, createdAt])

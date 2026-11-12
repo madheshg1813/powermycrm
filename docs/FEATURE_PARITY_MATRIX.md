@@ -29,13 +29,14 @@ the browser, **None** = untested. Rows marked (ext) go beyond what TeleCRM docum
 | Follow-up reminders | /features 2.7 | Tasks with due time, today/overdue/upcoming. No reminder delivery | Frontend In Progress | API; screen None |
 | WhatsApp notifications to agents | /features 2.1 | — | Not Started | None |
 | Push notifications | /features 2.8 | In-app notifications only | Backend In Progress | API |
-| 1-click dialer, click-to-call | /features 2.2–2.3 | `tel:` link only, not logged | Not Started | None |
+| 1-click dialer, click-to-call | /features 2.2–2.3 | `tel:` link opens the phone app; the call is logged with outcome, duration, notes and callback. No in-app dialling without a telephony provider | Testing | API + Manual |
+| Call log and dispositions (ext) | /crm-with-dialer | Manual call log per lead and per agent, workspace-defined outcomes, talk time on the leaderboard | Testing | API + Manual |
 | Call recording | /features 2.4 | — | Not Started | None |
 | IVR / telephony providers | /call-center-crm | — | Designed | None |
 | 1-click WhatsApp, SMS, email | /features 2.5–2.6 | — | Not Started | None |
 | WhatsApp Cloud API inbox, templates, bulk, chatbot | /whatsapp-crm | — | Designed | None |
 | WhatsApp chat sync | /whatsapp-crm | — | Researching | None |
-| Triggers, workflows, drip | /features 4.5 | — | Not Started | None |
+| Triggers, workflows, drip | /features 4.5 | Automations: 9 triggers, conditions, 12 step types including wait (drip), per-run logs, manual test run | Testing | API + Manual |
 | Payment creation, forecasting | /features 2.9 | Deals per lead (value, probability, expected close, won/lost) with a forecast by expected-close month; manual payment records with received/expected/overdue totals. Payment links need a gateway (Razorpay, not connected) | Testing | API + Manual |
 | Razorpay | /integrations | — | Designed | None |
 | Portal integrations (IndiaMART, Justdial, etc.) | /integrations | — | Designed | None |

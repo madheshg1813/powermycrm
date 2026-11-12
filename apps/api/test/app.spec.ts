@@ -900,6 +900,130 @@ describe('dynamic lists', () => {
   });
 });
 
+describe('call log', () => {
+  it('logs calls with outcomes, creates the follow-up, feeds the leaderboard and respects scope', async () => {
+    const o = await registerOrg('Calls');
+    const agent = await addMember(o, 'Sales Agent');
+    const lead = (await o.post('/leads', { name: 'Called Lead', phone: '9456700001' })).body;
+    const agentLead = (await agent.post('/leads', { name: 'Agent Called', phone: '9456700002' })).body;
+    const outcomes = (await o.get('/call-dispositions')).body;
+    expect(outcomes.map((d: any) => d.name)).toContain('Call back later');
+    const cb = outcomes.find((d: any) => d.name === 'Call back later').id;
+    const tomorrow = new Date(Date.now() + 864e5).toISOString();
+    const c1 = await o.post('/calls', { leadId: lead.id, status: 'COMPLETED', durationSec: 185, dispositionId: cb, notes: 'Wants a demo next week', followUp: { title: 'Call back about demo', dueAt: tomorrow } });
+    expect(c1.status).toBe(201);
+    expect(c1.body).toMatchObject({ phone: '9456700001', direction: 'OUTBOUND', durationSec: 185, disposition: { name: 'Call back later' }, user: { name: 'Owner One' } });
+    expect((await o.post('/calls', { leadId: lead.id, status: 'NO_ANSWER' })).body.durationSec).toBeNull();
+    expect((await o.post('/calls', { status: 'COMPLETED' })).status).toBe(400); // no lead, no phone
+    expect((await o.post('/calls', { phone: '9000000000', direction: 'INBOUND', durationSec: 30 })).status).toBe(201);
+    expect((await o.post('/calls', { leadId: lead.id, dispositionId: 'nope' })).status).toBe(400);
+    expect((await agent.post('/calls', { leadId: lead.id })).status).toBe(400); // not their lead
+    await agent.post('/calls', { leadId: agentLead.id, durationSec: 60 });
+
+    const acts = (await o.get(`/leads/${lead.id}/activities`)).body.map((a: any) => a.type);
+    expect(acts).toEqual(expect.arrayContaining(['call_logged', 'task_created']));
+    expect((await o.get(`/tasks?view=upcoming`)).body.items.map((t: any) => t.title)).toContain('Call back about demo');
+    const all = (await o.get('/calls')).body;
+    expect(all.total).toBe(4);
+    expect(all.totals).toEqual({ calls: 4, talkTimeSec: 275 });
+    expect((await o.get(`/calls?leadId=${lead.id}`)).body.total).toBe(2);
+    expect((await o.get('/calls?status=NO_ANSWER')).body.total).toBe(1);
+    expect((await agent.get('/calls')).body.items.map((c: any) => c.lead.name)).toEqual(['Agent Called']);
+    expect((await agent.patch(`/calls/${c1.body.id}`, { notes: 'x' })).status).toBe(404);
+    const day = (n: number) => new Date(Date.now() + n * 864e5).toISOString().slice(0, 10);
+    const board = (await o.get(`/reports/agents?from=${day(-1)}&to=${day(1)}`)).body.rows;
+    expect(board.find((r: any) => r.name === 'Owner One')).toMatchObject({ calls: 3, talkTimeSec: 215 });
+    expect((await o.get(`/reports/export?report=agents&from=${day(-1)}&to=${day(1)}`)).text).toContain('Calls,Talk time (sec)');
+    // Outcomes are managed per workspace.
+    const added = await o.post('/call-dispositions', { name: 'Price too high' });
+    expect(added.status).toBe(201);
+    expect((await o.post('/call-dispositions', { name: 'price TOO high' })).status).toBe(409);
+    expect((await agent.post('/call-dispositions', { name: 'X' })).status).toBe(403);
+    expect((await o.del(`/call-dispositions/${added.body.id}`)).status).toBe(200);
+    const other = await registerOrg('CallsOther');
+    expect((await other.get('/calls')).body.total).toBe(0);
+    expect((await other.del(`/calls/${c1.body.id}`)).status).toBe(404);
+  });
+});
+
+describe('automations', () => {
+  it('runs steps when a trigger fires and conditions hold, waits and resumes, skips otherwise, and logs each run', async () => {
+    const o = await registerOrg('Auto');
+    const agent = await addMember(o, 'Sales Agent');
+    const stages = (await o.get('/pipelines')).body[0].stages;
+    const contacted = stages.find((s: any) => s.name === 'Contacted').id;
+    const sources = (await o.get('/sources')).body;
+    const fb = sources.find((s: any) => s.name === 'Facebook').id;
+    const labels = (await o.get('/labels')).body;
+    const hot = labels.find((l: any) => l.name === 'Hot').id;
+    const list = (await o.post('/lists', { name: 'FB follow-ups' })).body;
+    const options = (await o.get('/automations/options')).body;
+    expect(options.triggers.map((t: any) => t.key)).toContain('lead.created');
+    expect(options.stepTypes.map((t: any) => t.key)).toContain('wait');
+
+    expect((await o.post('/automations', { name: 'Bad', trigger: 'lead.created', steps: [] })).status).toBe(400);
+    expect((await o.post('/automations', { name: 'Bad', trigger: 'lead.created', steps: [{ type: 'move_stage', stageId: 'nope' }] })).status).toBe(400);
+    expect((await o.post('/automations', { name: 'Bad', trigger: 'lead.exploded', steps: [{ type: 'archive' }] })).status).toBe(400);
+    const a = await o.post('/automations', {
+      name: 'Facebook welcome',
+      trigger: 'lead.created',
+      conditions: [{ field: 'source', op: 'is', value: fb }, { field: 'dealValue', op: 'is_empty' }],
+      steps: [
+        { type: 'add_label', labelId: hot },
+        { type: 'assign', ownerId: agent.userId },
+        { type: 'create_task', title: 'Welcome call for {{lead.name}}', dueInHours: 2, assignee: 'owner' },
+        { type: 'wait', seconds: 2 },
+        { type: 'move_stage', stageId: contacted },
+        { type: 'add_to_list', listId: list.id },
+        { type: 'notify', userId: 'owner', title: '{{lead.name}} is now in {{lead.stage}}' },
+        { type: 'update_field', field: 'score', value: '70' },
+      ],
+    });
+    expect(a.status).toBe(201);
+    expect((await agent.get('/automations')).status).toBe(403);
+
+    // A matching lead goes through every step, including the wait.
+    const lead = (await o.post('/leads', { name: 'Auto Lead', phone: '9567800001', sourceId: fb, ownerId: null })).body;
+    const done = await until(async () => (await o.get(`/automations/${a.body.id}/runs`)).body.items.find((r: any) => r.leadId === lead.id && r.status === 'DONE'), 20_000);
+    expect(done.log.map((l: any) => l.type)).toEqual(['add_label', 'assign', 'create_task', 'wait', 'move_stage', 'add_to_list', 'notify', 'update_field']);
+    const after = (await o.get(`/leads/${lead.id}`)).body;
+    expect(after).toMatchObject({ stage: { name: 'Contacted' }, owner: { id: agent.userId }, score: 70, lists: [{ id: list.id, name: 'FB follow-ups' }] });
+    expect(after.labels.map((l: any) => l.name)).toEqual(['Hot']);
+    expect((await agent.get('/tasks?view=all')).body.items.map((t: any) => t.title)).toContain('Welcome call for Auto Lead');
+    expect((await agent.get('/notifications')).body.items.map((n: any) => n.title)).toContain('Auto Lead is now in Contacted');
+    expect((await o.get(`/leads/${lead.id}/activities`)).body.map((x: any) => x.type)).toContain('automation_ran');
+    expect((await o.get('/automations')).body[0]).toMatchObject({ runs: 1, last30Days: { done: 1 } });
+
+    // A lead from another source is skipped with the reason; a repeat within ten minutes is guarded.
+    const other = (await o.post('/leads', { name: 'Other Source', phone: '9567800002', sourceId: sources[0].id === fb ? sources[1].id : sources[0].id })).body;
+    const skipped = await until(async () => (await o.get(`/automations/${a.body.id}/runs`)).body.items.find((r: any) => r.leadId === other.id));
+    expect(skipped.status).toBe('SKIPPED');
+    expect(skipped.log[0].result).toContain('Condition not met: source');
+    const manualSkip = await o.post(`/automations/${a.body.id}/test`, { leadId: other.id });
+    expect(manualSkip.status).toBe(201);
+    expect(manualSkip.body.status).toBe('SKIPPED');
+    // A manual run on a matching lead executes synchronously up to the wait step, then parks.
+    const manualRun = await o.post(`/automations/${a.body.id}/test`, { leadId: lead.id });
+    expect(manualRun.body.status).toBe('WAITING');
+    expect(manualRun.body.log.map((l: any) => l.type)).toEqual(['add_label', 'assign', 'create_task', 'wait']);
+    // Manual test on a fresh matching lead runs synchronously up to the wait, then resumes.
+    await o.patch(`/automations/${a.body.id}`, { steps: [{ type: 'add_label', labelId: hot }, { type: 'archive' }] });
+    const fresh = (await o.post('/leads', { name: 'Fresh Lead', phone: '9567800003', sourceId: fb, ownerId: null })).body;
+    await until(async () => (await o.get(`/automations/${a.body.id}/runs`)).body.items.find((r: any) => r.leadId === fresh.id && r.status === 'DONE'));
+    expect((await o.get(`/leads/${fresh.id}`)).body.archivedAt).toBeTruthy();
+    // Paused automations do nothing; deleting removes the history; other workspaces see nothing.
+    await o.patch(`/automations/${a.body.id}`, { active: false });
+    const quiet = (await o.post('/leads', { name: 'Quiet Lead', phone: '9567800004', sourceId: fb })).body;
+    await new Promise((r) => setTimeout(r, 2500));
+    expect((await o.get(`/automations/${a.body.id}/runs`)).body.items.find((r: any) => r.leadId === quiet.id)).toBeUndefined();
+    const stranger = await registerOrg('AutoOther');
+    expect((await stranger.get('/automations')).body).toHaveLength(0);
+    expect((await stranger.get(`/automations/${a.body.id}/runs`)).status).toBe(404);
+    expect((await stranger.post(`/automations/${a.body.id}/test`, { leadId: lead.id })).status).toBe(404);
+    expect((await o.del(`/automations/${a.body.id}`)).status).toBe(200);
+  });
+});
+
 describe('assignment rules', () => {
   it('distributes leads round-robin, prefers a source rule and skips deactivated users', async () => {
     const o = await registerOrg('Rules');

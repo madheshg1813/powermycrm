@@ -16,6 +16,12 @@ export const FIELD_TYPES: Record<CustomField['type'], string> = {
   TEXT: 'Text', LONG_TEXT: 'Long text', NUMBER: 'Number', DATE: 'Date', DROPDOWN: 'Dropdown', MULTI_SELECT: 'Multi-select', CHECKBOX: 'Checkbox', URL: 'Link', EMAIL: 'Email', PHONE: 'Phone',
 };
 export type LeadList = { id: string; name: string; description: string | null; kind: 'STATIC' | 'DYNAMIC'; filters: Record<string, string> | null; leads: number; mine: boolean; updatedAt?: string };
+export type CallDisposition = { id: string; name: string; position: number };
+export type Call = {
+  id: string; leadId: string | null; userId: string; direction: 'OUTBOUND' | 'INBOUND'; status: 'COMPLETED' | 'NO_ANSWER' | 'BUSY' | 'FAILED' | 'CANCELLED' | 'MISSED';
+  phone: string | null; startedAt: string; durationSec: number | null; dispositionId: string | null; notes: string | null; recordingUrl: string | null;
+  lead?: { id: string; name: string; phone: string | null } | null; user?: { id: string; name: string }; disposition?: { id: string; name: string } | null;
+};
 export type Attachment = { id: string; leadId: string; name: string; mimeType: string; size: number; createdAt: string; uploadedBy: { id: string; name: string } | null };
 export type Lead = {
   customFields: Record<string, any>;
@@ -34,19 +40,20 @@ export type Task = {
   lead?: { id: string; name: string; phone: string | null } | null; assignee?: { id: string; name: string };
 };
 
-type Refs = { pipelines: Pipeline[]; sources: Source[]; labels: Label[]; members: Member[]; fields: CustomField[]; lists: LeadList[]; ready: boolean; reload: () => Promise<void> };
+type Refs = { pipelines: Pipeline[]; sources: Source[]; labels: Label[]; members: Member[]; fields: CustomField[]; lists: LeadList[]; dispositions: CallDisposition[]; ready: boolean; reload: () => Promise<void> };
 const RefsContext = createContext<Refs | null>(null);
 
 /** Reference lists every screen needs (stages, sources, labels, users), loaded once per workspace. */
 export function RefsProvider({ children }: { children: React.ReactNode }) {
-  const [state, setState] = useState<Omit<Refs, 'reload'>>({ pipelines: [], sources: [], labels: [], members: [], fields: [], lists: [], ready: false });
+  const [state, setState] = useState<Omit<Refs, 'reload'>>({ pipelines: [], sources: [], labels: [], members: [], fields: [], lists: [], dispositions: [], ready: false });
   const reload = useCallback(async () => {
-    const [pipelines, sources, labels, members, fields, lists] = await Promise.all([
+    const [pipelines, sources, labels, members, fields, lists, dispositions] = await Promise.all([
       api<Pipeline[]>('/pipelines'), api<Source[]>('/sources'), api<Label[]>('/labels'), api<Member[]>('/users'), api<CustomField[]>('/custom-fields'),
       // Lists need leads.view; a role without it simply gets none.
       api<LeadList[]>('/lists').catch(() => [] as LeadList[]),
+      api<CallDisposition[]>('/call-dispositions').catch(() => [] as CallDisposition[]),
     ]);
-    setState({ pipelines, sources, labels, members, fields, lists, ready: true });
+    setState({ pipelines, sources, labels, members, fields, lists, dispositions, ready: true });
   }, []);
   useEffect(() => {
     reload().catch(() => setState((s) => ({ ...s, ready: true })));

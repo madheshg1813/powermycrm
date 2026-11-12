@@ -1,20 +1,21 @@
 'use client';
 import {
-  Archive, ArchiveRestore, ArrowLeft, ArrowRightLeft, Banknote, CalendarCheck, CalendarPlus, Check, Download, FileText, GitMerge, Handshake, ListPlus, Mail, MessageSquareText, Paperclip, Pencil, Phone, Plus, Trash2, UserRound, Sparkles, Upload, X,
+  Archive, ArchiveRestore, ArrowLeft, ArrowRightLeft, Banknote, CalendarCheck, CalendarPlus, Check, Download, FileText, GitMerge, Handshake, ListPlus, Mail, MessageSquareText, Paperclip, Pencil, Phone, PhoneCall, Plus, Trash2, UserRound, Sparkles, Upload, X, Zap,
 } from 'lucide-react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
+import { CALL_STATUS, LogCallForm } from '@/components/call-form';
 import { OpportunityForm, PaymentForm } from '@/components/deal-forms';
 import { LeadForm, TaskForm } from '@/components/forms';
 import { Avatar, ColorDot, Dropdown, EmptyState, ErrorState, Field, LabelChip, Modal, Skeleton, Spinner, Tabs, cx, useUi } from '@/components/ui';
 import { api, downloadFile, uploadFile, useApi } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { fileSize, fmtDate, fmtDateTime, money, relTime } from '@/lib/format';
-import { Attachment, Lead, OPP_STATUS, Opportunity, PAYMENT_METHODS, PAYMENT_STATUS, Payment, TASK_TYPES, Task, useChanged, useRefs } from '@/lib/refs';
+import { Attachment, Call, Lead, OPP_STATUS, Opportunity, PAYMENT_METHODS, PAYMENT_STATUS, Payment, TASK_TYPES, Task, useChanged, useRefs } from '@/lib/refs';
 
 type Detail = Lead & { duplicates: { id: string; name: string; phone: string | null; email: string | null; createdAt: string; owner: { name: string } | null }[]; tasks: Task[]; opportunities: Opportunity[]; payments: Payment[]; attachments: Attachment[] };
-type Tab = 'timeline' | 'tasks' | 'deals' | 'payments' | 'files';
+type Tab = 'timeline' | 'tasks' | 'calls' | 'deals' | 'payments' | 'files';
 type Activity = { id: string; type: string; data: any; createdAt: string; actor: { id: string; name: string } | null };
 
 const FIELD_LABELS: Record<string, string> = { name: 'Name', phone: 'Phone', email: 'Email', company: 'Company', city: 'City', score: 'Score', dealValue: 'Deal value', expectedCloseAt: 'Expected close', source: 'Source', lostReason: 'Lost reason' };
@@ -47,6 +48,9 @@ function describe(a: Activity): { icon: React.ComponentType<{ className?: string
     case 'payment_refunded': return { icon: Banknote, text: <>Refunded <strong>{money(d.amount, d.currency)}</strong></> };
     case 'payment_failed': return { icon: Banknote, text: <>Payment of <strong>{money(d.amount, d.currency)}</strong> failed</> };
     case 'payment_updated': return { icon: Banknote, text: 'Updated a payment' };
+    case 'call_logged': return { icon: PhoneCall, text: <>{d.direction === 'INBOUND' ? 'Inbound call' : 'Called'}{d.status === 'COMPLETED' ? d.durationSec ? ` · ${Math.floor(d.durationSec / 60)}m ${d.durationSec % 60}s` : '' : ` · ${CALL_STATUS[d.status as Call['status']] ?? d.status}`}{d.disposition ? <> · <strong>{d.disposition}</strong></> : ''}</>, body: d.notes ?? undefined };
+    case 'enquiry_repeat': return { icon: Sparkles, text: 'Enquired again' };
+    case 'automation_ran': return { icon: Zap, text: <>Automation <strong>{d.name}</strong> ran {d.steps} step{d.steps === 1 ? '' : 's'}</> };
     case 'attachment_added': return { icon: Paperclip, text: <>Added file <strong>{d.name}</strong></> };
     case 'attachment_removed': return { icon: Paperclip, text: <>Removed file <strong>{d.name}</strong></> };
     case 'archived': return { icon: Archive, text: 'Archived' };
@@ -70,18 +74,21 @@ export default function LeadDetailPage() {
   const [lostReason, setLostReason] = useState('');
   const [payOpen, setPayOpen] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const calls = useApi<{ items: Call[]; total: number; totals: { calls: number; talkTimeSec: number } }>(`/calls?leadId=${id}&pageSize=50`);
+  const [callOpen, setCallOpen] = useState(false);
+  const [editCall, setEditCall] = useState<Call | null>(null);
   const [uploading, setUploading] = useState(false);
   const [editPay, setEditPay] = useState<Payment | null>(null);
   useEffect(() => {
     const t = new URLSearchParams(window.location.search).get('tab');
-    if (t === 'deals' || t === 'payments' || t === 'tasks' || t === 'files') setTab(t);
+    if (t === 'deals' || t === 'payments' || t === 'tasks' || t === 'files' || t === 'calls') setTab(t);
   }, []);
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [taskOpen, setTaskOpen] = useState(false);
   const [editTask, setEditTask] = useState<Task | null>(null);
-  const reload = () => { lead.reload(); acts.reload(); };
+  const reload = () => { lead.reload(); acts.reload(); calls.reload(); };
   useChanged(reload);
 
   if (lead.error) {
@@ -193,6 +200,12 @@ export default function LeadDetailPage() {
     catch (e) { toast((e as Error).message, 'error'); }
   }
 
+  async function deleteCall(c: Call) {
+    if (!(await confirm({ title: 'Delete this call record?', text: 'The timeline entry stays; the call itself is removed from reports.', confirmLabel: 'Delete', danger: true }))) return;
+    try { await api(`/calls/${c.id}`, { method: 'DELETE' }); toast('Call deleted'); reload(); }
+    catch (e) { toast((e as Error).message, 'error'); }
+  }
+
   async function setTaskStatus(t: Task, status: string) {
     try {
       await api(`/tasks/${t.id}`, { method: 'PATCH', body: { status } });
@@ -234,7 +247,7 @@ export default function LeadDetailPage() {
             {l.archivedAt && <span className="pill-amber">Archived</span>}
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            {l.phone && <a className="btn-ghost" href={`tel:${l.phone.replace(/[^\d+]/g, '')}`} title="Opens your device's phone app"><Phone className="h-4 w-4" />Call</a>}
+            {l.phone && <a className="btn-ghost" href={`tel:${l.phone.replace(/[^\d+]/g, '')}`} title="Opens your device's phone app and logs the call" onClick={() => { if (!l.archivedAt) { setEditCall(null); setTimeout(() => setCallOpen(true), 400); } }}><Phone className="h-4 w-4" />Call</a>}
             {l.email && <a className="btn-ghost" href={`mailto:${l.email}`} title="Opens your email app"><Mail className="h-4 w-4" />Email</a>}
             {canEdit && <button className="btn-ghost" onClick={() => setEditOpen(true)}><Pencil className="h-4 w-4" />Edit</button>}
             {!l.archivedAt && <button className="btn-primary" onClick={() => { setEditTask(null); setTaskOpen(true); }}><CalendarPlus className="h-4 w-4" />Follow-up</button>}
@@ -331,6 +344,7 @@ export default function LeadDetailPage() {
             <Tabs value={tab} onChange={setTab} tabs={[
               { value: 'timeline' as Tab, label: 'Timeline' },
               { value: 'tasks' as Tab, label: 'Follow-ups', count: openTasks.length },
+              { value: 'calls' as Tab, label: 'Calls', count: calls.data?.total || undefined },
               { value: 'deals' as Tab, label: 'Deals', count: l.opportunities.filter((d) => d.status === 'OPEN').length },
               ...(can('payments.view') ? [{ value: 'payments' as Tab, label: 'Payments', count: l.payments.filter((p) => p.status === 'PENDING').length }] : []),
               { value: 'files' as Tab, label: 'Files', count: l.attachments.length || undefined },
@@ -391,7 +405,25 @@ export default function LeadDetailPage() {
                 );
               })}
             </ul>
-          )) : tab === 'files' ? (
+          )) : tab === 'calls' ? (
+            <div>
+              {!l.archivedAt && <div className="flex flex-wrap items-center justify-between gap-3 px-5 pt-4"><p className="text-ink-muted">{calls.data?.total ? `${calls.data.totals.calls} call${calls.data.totals.calls === 1 ? '' : 's'} · ${Math.round(calls.data.totals.talkTimeSec / 60)} min on the phone` : 'Log each call so the outcome and next step are on record.'}</p><button className="btn-ghost btn-sm" onClick={() => { setEditCall(null); setCallOpen(true); }}><PhoneCall className="h-3.5 w-3.5" />Log call</button></div>}
+              {calls.error ? <ErrorState message={calls.error.message} onRetry={calls.reload} /> : !calls.data ? <Skeleton rows={3} /> : !calls.data.items.length ? <EmptyState icon={PhoneCall} title="No calls logged" text="Use the Call button above; the log dialog opens after your phone app." /> : (
+                <ul className="divide-y divide-ink/5">
+                  {calls.data.items.map((c) => (
+                    <li key={c.id} className="flex flex-wrap items-start gap-3 px-5 py-3.5">
+                      <div className="min-w-0 flex-1">
+                        <p className="font-medium">{c.direction === 'INBOUND' ? 'Inbound' : 'Outbound'} · {CALL_STATUS[c.status]}{c.disposition && <span className="pill-muted ml-2">{c.disposition.name}</span>}</p>
+                        <p className="mt-0.5 flex flex-wrap gap-x-2 text-[13px] text-ink-muted"><span>{fmtDateTime(c.startedAt)}</span>{c.durationSec !== null && c.status === 'COMPLETED' && <span>{Math.floor(c.durationSec / 60)}m {c.durationSec % 60}s</span>}<span>{c.user?.name}</span>{c.phone && <span>{c.phone}</span>}</p>
+                        {c.notes && <p className="mt-1 whitespace-pre-wrap text-[13px] text-ink-soft">{c.notes}</p>}
+                      </div>
+                      {(c.userId === me?.user.id || can('tasks.manage')) && <span className="flex gap-1"><button className="btn-icon" onClick={() => { setEditCall(c); setCallOpen(true); }} aria-label="Edit call"><Pencil className="h-4 w-4" /></button><button className="btn-icon" onClick={() => deleteCall(c)} aria-label="Delete call"><Trash2 className="h-4 w-4" /></button></span>}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          ) : tab === 'files' ? (
             <div>
               {canEdit && (
                 <div className="flex flex-wrap items-center justify-between gap-3 px-5 pt-4">
@@ -485,6 +517,7 @@ export default function LeadDetailPage() {
         </section>
       </div>
 
+      <LogCallForm open={callOpen} onClose={() => setCallOpen(false)} leadId={l.id} phone={l.phone} call={editCall} onSaved={reload} />
       <OpportunityForm open={dealOpen} onClose={() => setDealOpen(false)} leadId={l.id} deal={editDeal} onSaved={reload} />
       <PaymentForm open={payOpen} onClose={() => setPayOpen(false)} leadId={l.id} deals={l.opportunities.filter((d) => d.status !== 'LOST').map((d) => ({ id: d.id, name: d.name }))} payment={editPay} onSaved={reload} />
       <Modal open={!!losing} onClose={() => setLosing(null)} title={`Mark ${losing?.name ?? 'deal'} as lost`}

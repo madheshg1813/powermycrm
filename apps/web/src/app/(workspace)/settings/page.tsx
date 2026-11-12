@@ -2,6 +2,7 @@
 import { ArrowDown, ArrowUp, Check, Pencil, Plus, Trash2 } from 'lucide-react';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
+import { Automations } from '@/components/automations';
 import { Integrations } from '@/components/integrations';
 import { ColorDot, ErrorState, Field, PageHeader, Skeleton, Spinner, Tabs, useUi } from '@/components/ui';
 import { api, useApi } from '@/lib/api';
@@ -9,7 +10,7 @@ import { useAuth } from '@/lib/auth';
 import { fmtDateTime, relTime } from '@/lib/format';
 import { CustomField, FIELD_TYPES, Stage, useRefs } from '@/lib/refs';
 
-type Tab = 'account' | 'organisation' | 'pipeline' | 'sources' | 'labels' | 'fields' | 'lists' | 'rules' | 'integrations';
+type Tab = 'account' | 'organisation' | 'pipeline' | 'sources' | 'labels' | 'fields' | 'lists' | 'outcomes' | 'rules' | 'automations' | 'integrations';
 const COLORS = ['#2563EB', '#7C3AED', '#0E7490', '#168A4C', '#B54708', '#EA5A2A', '#B42318', '#78716C'];
 
 export default function SettingsPage() {
@@ -18,9 +19,9 @@ export default function SettingsPage() {
   const tabs: { value: Tab; label: string }[] = [
     { value: 'account', label: 'My account' },
     ...(can('settings.manage') ? [{ value: 'organisation' as Tab, label: 'Organisation' }] : []),
-    ...(can('pipeline.manage') ? [{ value: 'pipeline' as Tab, label: 'Pipeline stages' }, { value: 'sources' as Tab, label: 'Lead sources' }, { value: 'labels' as Tab, label: 'Labels' }, { value: 'fields' as Tab, label: 'Lead fields' }] : []),
+    ...(can('pipeline.manage') ? [{ value: 'pipeline' as Tab, label: 'Pipeline stages' }, { value: 'sources' as Tab, label: 'Lead sources' }, { value: 'labels' as Tab, label: 'Labels' }, { value: 'fields' as Tab, label: 'Lead fields' }, { value: 'outcomes' as Tab, label: 'Call outcomes' }] : []),
     ...(can('leads.edit') ? [{ value: 'lists' as Tab, label: 'Lead lists' }] : []),
-    ...(can('settings.manage') ? [{ value: 'rules' as Tab, label: 'Assignment rules' }, { value: 'integrations' as Tab, label: 'Integrations' }] : []),
+    ...(can('settings.manage') ? [{ value: 'rules' as Tab, label: 'Assignment rules' }, { value: 'automations' as Tab, label: 'Automations' }, { value: 'integrations' as Tab, label: 'Integrations' }] : []),
   ];
   useEffect(() => {
     const t = new URLSearchParams(window.location.search).get('tab') as Tab | null;
@@ -39,6 +40,8 @@ export default function SettingsPage() {
         {tab === 'fields' && <LeadFields />}
         {tab === 'lists' && <LeadLists />}
         {tab === 'rules' && <AssignmentRules />}
+        {tab === 'outcomes' && <Outcomes />}
+        {tab === 'automations' && <Automations />}
         {tab === 'integrations' && <Integrations />}
       </div>
     </div>
@@ -366,6 +369,47 @@ function LeadLists() {
         <Field label="New list name"><input className="input" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} maxLength={80} placeholder="Diwali offer calls" /></Field>
         <Field label="Description" hint="Optional"><input className="input" value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} maxLength={300} placeholder="Call before the 20th" /></Field>
         <div className="sm:col-span-2"><button className="btn-ink" disabled={busy || !f.name.trim()}><Plus className="h-4 w-4" />Create list</button></div>
+      </form>
+    </section>
+  );
+}
+
+function Outcomes() {
+  const { dispositions, reload, ready } = useRefs();
+  const { confirm } = useUi();
+  const { busy, run } = useSave();
+  const [name, setName] = useState('');
+  const [editing, setEditing] = useState<{ id: string; name: string } | null>(null);
+  const act = (fn: () => Promise<unknown>, ok: string) => run(() => fn().then(reload), ok);
+  return (
+    <section className="card">
+      <div className="card-pad pb-3"><h2 className="card-title">Call outcomes</h2><p className="text-ink-muted">What an agent picks when logging a call. Outcomes appear on the lead timeline and can trigger automations.</p></div>
+      {!ready ? <Skeleton rows={4} /> : (
+        <ul className="divide-y divide-ink/5 border-y border-ink/10">
+          {dispositions.map((d) => (
+            <li key={d.id} className="flex flex-wrap items-center gap-3 px-5 py-2.5">
+              {editing?.id === d.id ? (
+                <form className="flex flex-1 flex-wrap items-center gap-3" onSubmit={async (e) => { e.preventDefault(); if (await act(() => api(`/call-dispositions/${d.id}`, { method: 'PATCH', body: { name: editing.name } }), 'Outcome saved')) setEditing(null); }}>
+                  <input className="input max-w-[240px]" value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} autoFocus aria-label="Outcome name" />
+                  <button className="btn-ink btn-sm" disabled={busy}>Save</button><button type="button" className="btn-ghost btn-sm" onClick={() => setEditing(null)}>Cancel</button>
+                </form>
+              ) : (
+                <>
+                  <span className="flex-1 font-medium">{d.name}</span>
+                  <span className="flex">
+                    <button className="btn-icon" onClick={() => setEditing({ id: d.id, name: d.name })} aria-label={`Edit ${d.name}`}><Pencil className="h-4 w-4" /></button>
+                    <button className="btn-icon" disabled={busy} aria-label={`Delete ${d.name}`} onClick={async () => { if (await confirm({ title: `Delete the outcome ${d.name}?`, text: 'Calls already logged with it keep their notes but lose the outcome.', confirmLabel: 'Delete', danger: true })) act(() => api(`/call-dispositions/${d.id}`, { method: 'DELETE' }), 'Outcome deleted'); }}><Trash2 className="h-4 w-4" /></button>
+                  </span>
+                </>
+              )}
+            </li>
+          ))}
+          {!dispositions.length && <li className="px-5 py-6 text-center text-ink-muted">No outcomes yet.</li>}
+        </ul>
+      )}
+      <form className="flex flex-wrap items-center gap-3 card-pad" onSubmit={async (e) => { e.preventDefault(); if (name.trim() && (await act(() => api('/call-dispositions', { body: { name } }), 'Outcome added'))) setName(''); }}>
+        <input className="input max-w-[240px]" placeholder="New outcome" value={name} onChange={(e) => setName(e.target.value)} aria-label="New outcome" maxLength={60} />
+        <button className="btn-ink" disabled={busy || !name.trim()}><Plus className="h-4 w-4" />Add</button>
       </form>
     </section>
   );

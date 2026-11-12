@@ -8,6 +8,8 @@ import { AuthGuard, PrismaService, Public } from './common/core';
 import { QueueService } from './common/queue';
 import { StorageService } from './common/storage';
 import { AttachmentsController } from './modules/attachments';
+import { AutomationsController, AutomationsService } from './modules/automations';
+import { CallsController } from './modules/calls';
 import { EmailController, EmailService } from './modules/email';
 import { ApiKeysController, IntegrationsController } from './modules/integrations';
 import { OutboxService, WebhooksController } from './modules/webhooks';
@@ -40,13 +42,14 @@ class HealthController {
       skipIf: () => process.env.NODE_ENV === 'test',
     }),
   ],
-  controllers: [HealthController, AuthController, OrgController, CatalogController, CustomiseController, LeadsController, ListsController, TasksController, DashboardController, ReportsController, OpportunitiesController, PaymentsController, WebhooksController, IntegrationsController, ApiKeysController, EmailController, AttachmentsController],
+  controllers: [HealthController, AuthController, OrgController, CatalogController, CustomiseController, LeadsController, ListsController, TasksController, DashboardController, ReportsController, OpportunitiesController, PaymentsController, WebhooksController, IntegrationsController, ApiKeysController, EmailController, AttachmentsController, CallsController, AutomationsController],
   providers: [
     PrismaService,
     QueueService,
     StorageService,
     OutboxService,
     EmailService,
+    AutomationsService,
     AuthService,
     LeadsService,
     { provide: APP_GUARD, useClass: ThrottlerGuard },

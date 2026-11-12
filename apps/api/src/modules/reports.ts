@@ -178,6 +178,7 @@ export class ReportsController {
       ${r.owners ? Prisma.sql`AND t."assigneeId" IN (${Prisma.join(r.owners)})` : Prisma.empty}
       GROUP BY 1`;
     const overdue = await this.prisma.task.groupBy({ by: ['assigneeId'], where: { organisationId: ctx.orgId, ...assignees, status: 'OPEN', dueAt: { lt: new Date() } }, _count: true });
+    const calls = await this.prisma.call.groupBy({ by: ['userId'], where: { organisationId: ctx.orgId, ...(r.owners ? { userId: { in: r.owners } } : {}), startedAt: inRange }, _count: true, _sum: { durationSec: true } });
 
     const pick = <T extends { _count: number }>(rows: (T & { ownerId?: string | null; assigneeId?: string; actorId?: string | null })[], id: string | null) =>
       rows.find((x) => (x.ownerId ?? x.assigneeId ?? x.actorId ?? null) === id);
@@ -189,6 +190,7 @@ export class ReportsController {
         created: c, won: wn, lost: ls, wonValue: Number(w?._sum.dealValue ?? 0), open: pick(open, id)?._count ?? 0, conversion: pct(wn, ls),
         tasksCompleted: pick(tasks, id)?._count ?? 0, tasksOnTime: onTime.find((x) => x.assigneeId === id)?.n ?? 0, tasksOverdue: pick(overdue, id)?._count ?? 0,
         notes: pick(notes, id)?._count ?? 0,
+        calls: calls.find((c) => c.userId === id)?._count ?? 0, talkTimeSec: calls.find((c) => c.userId === id)?._sum.durationSec ?? 0,
       };
     };
     const rows = members.map((m) => row(m.user.id, m.user.name, m.status === 'ACTIVE'));
@@ -278,9 +280,9 @@ export class ReportsController {
     } else if (q.report === 'agents') {
       const d = await this.agentsData(ctx, r);
       out = csv(
-        ['Agent', 'Leads created', 'Won', 'Lost', 'Won value', 'Open now', 'Conversion', 'Follow-ups completed', 'Completed on time', 'Overdue now', 'Notes added'],
+        ['Agent', 'Leads created', 'Won', 'Lost', 'Won value', 'Open now', 'Conversion', 'Follow-ups completed', 'Completed on time', 'Overdue now', 'Notes added', 'Calls', 'Talk time (sec)'],
         d.rows.map((x) => ({ ...x, conversion: x.conversion === null ? '' : Math.round(x.conversion * 100) + '%' })),
-        ['name', 'created', 'won', 'lost', 'wonValue', 'open', 'conversion', 'tasksCompleted', 'tasksOnTime', 'tasksOverdue', 'notes'],
+        ['name', 'created', 'won', 'lost', 'wonValue', 'open', 'conversion', 'tasksCompleted', 'tasksOnTime', 'tasksOverdue', 'notes', 'calls', 'talkTimeSec'],
       );
     } else if (q.report === 'sources') {
       const d = await this.sourcesData(ctx, r);

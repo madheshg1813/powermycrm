@@ -8,7 +8,7 @@ import { QueueService, decrypt, encrypt } from '../common/queue';
 /** Event types the outbox can carry. Webhook endpoints subscribe to any of these, or to `*`. */
 export const EVENT_TYPES = [
   'lead.created', 'lead.stage_changed', 'lead.assigned', 'lead.archived',
-  'opportunity.won', 'opportunity.lost', 'payment.received', 'payment.refunded', 'task.completed',
+  'opportunity.won', 'opportunity.lost', 'payment.received', 'payment.refunded', 'task.completed', 'call.logged',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -50,8 +50,11 @@ export class OutboxService implements OnModuleInit, OnApplicationBootstrap {
     if (!eventIds.length) return;
     void (async () => {
       try {
-        const subscribers = await this.prisma.webhookEndpoint.count({ where: { organisationId, active: true } });
-        if (!subscribers) {
+        const [endpoints, automations] = await Promise.all([
+          this.prisma.webhookEndpoint.count({ where: { organisationId, active: true } }),
+          this.prisma.automation.count({ where: { organisationId, active: true } }),
+        ]);
+        if (!endpoints && !automations) {
           await this.prisma.outboxEvent.updateMany({ where: { id: { in: eventIds }, dispatchedAt: null }, data: { dispatchedAt: new Date() } });
           return;
         }
@@ -81,6 +84,9 @@ export class OutboxService implements OnModuleInit, OnApplicationBootstrap {
       return created;
     });
     for (const d of deliveries) void this.queue.send('webhook.deliver', { deliveryId: d.id }, { singletonKey: d.id });
+    // Automations listening for this event type run through their own queue.
+    const automations = await this.prisma.automation.findMany({ where: { organisationId: event.organisationId, active: true, trigger: event.type }, select: { id: true } });
+    for (const a of automations) void this.queue.send('automation.run', { automationId: a.id, eventId }, { singletonKey: `${a.id}:${eventId}` });
   }
 
   async sweep() {

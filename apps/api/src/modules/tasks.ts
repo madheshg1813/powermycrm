@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { Context, Ctx, PrismaService, pageSchema, parse } from '../common/core';
 import { LeadsService } from './leads';
+import { OutboxService } from './webhooks';
 
 const types = ['FOLLOW_UP', 'CALLBACK', 'MEETING', 'DEMO', 'SITE_VISIT', 'TASK'] as const;
 const createSchema = z.object({
@@ -34,6 +35,7 @@ export class TasksController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly leads: LeadsService,
+    private readonly outbox: OutboxService,
   ) {}
 
   /** Whose tasks the caller may see: everyone's (ALL scope), their team's, or only their own. */
@@ -149,15 +151,19 @@ export class TasksController {
     await this.checkRefs(ctx, d);
     const data: Prisma.TaskUncheckedUpdateInput = { ...d };
     if (d.status && d.status !== task.status) data.completedAt = d.status === 'DONE' ? new Date() : null;
-    return this.prisma.$transaction(async (tx) => {
+    const events: string[] = [];
+    const result = await this.prisma.$transaction(async (tx) => {
       const updated = await tx.task.update({ where: { id }, data, include });
       if (updated.leadId && d.status && d.status !== task.status) {
         const type = d.status === 'DONE' ? 'task_completed' : d.status === 'CANCELLED' ? 'task_cancelled' : 'task_reopened';
         await tx.leadActivity.create({ data: { organisationId: ctx.orgId, leadId: updated.leadId, actorId: ctx.userId, type, data: { title: updated.title } } });
         await tx.lead.update({ where: { id: updated.leadId }, data: { lastActivityAt: new Date() } });
       }
+      if (d.status === 'DONE' && task.status !== 'DONE') events.push(await this.outbox.emit(tx, ctx.orgId, 'task.completed', { task: { id: updated.id, title: updated.title, type: updated.type, leadId: updated.leadId, assigneeId: updated.assigneeId, completedAt: updated.completedAt }, lead: updated.lead ? { id: updated.lead.id, name: updated.lead.name } : null }));
       return updated;
     });
+    this.outbox.kick(ctx.orgId, events);
+    return result;
   }
 
   @Delete(':id')
