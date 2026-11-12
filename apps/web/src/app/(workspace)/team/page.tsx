@@ -174,10 +174,11 @@ function InviteModal({ open, onClose, roles, onDone }: { open: boolean; onClose:
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [link, setLink] = useState('');
+  const [emailed, setEmailed] = useState(false);
   const options = roles.filter((r) => r.systemKey !== 'owner' || me?.role.systemKey === 'owner');
 
   useEffect(() => {
-    if (open) { setEmail(''); setError(''); setLink(''); setRoleId(roles.find((r) => r.systemKey === 'agent')?.id ?? ''); }
+    if (open) { setEmail(''); setError(''); setLink(''); setEmailed(false); setRoleId(roles.find((r) => r.systemKey === 'agent')?.id ?? ''); }
   }, [open, roles]);
 
   async function submit(e: React.FormEvent) {
@@ -185,8 +186,9 @@ function InviteModal({ open, onClose, roles, onDone }: { open: boolean; onClose:
     setBusy(true);
     setError('');
     try {
-      const r = await api<{ inviteUrl: string }>('/invitations', { body: { email, roleId } });
+      const r = await api<{ inviteUrl: string; emailSent: boolean }>('/invitations', { body: { email, roleId } });
       setLink(r.inviteUrl);
+      setEmailed(r.emailSent);
       onDone();
     } catch (err) { setError((err as Error).message); } finally { setBusy(false); }
   }
@@ -196,7 +198,7 @@ function InviteModal({ open, onClose, roles, onDone }: { open: boolean; onClose:
       footer={link ? <button className="btn-ink" onClick={onClose}>Done</button> : <><button className="btn-ghost" onClick={onClose}>Cancel</button><button className="btn-primary" disabled={busy || !email || !roleId} onClick={submit}>{busy && <Spinner />}Create invitation</button></>}>
       {link ? (
         <div>
-          <p className="text-ink-soft">Invitation created for <strong>{email}</strong>. Email delivery is not connected yet, so send them this link yourself. It works once and expires in 7 days.</p>
+          <p className="text-ink-soft">{emailed ? <>An invitation email is on its way to <strong>{email}</strong>. You can also share the link below. It works once and expires in 7 days.</> : <>Invitation created for <strong>{email}</strong>. No email connection is set up (Settings → Integrations → Email), so send them this link yourself. It works once and expires in 7 days.</>}</p>
           <div className="mt-3 flex gap-2">
             <input className="input" readOnly value={link} onFocus={(e) => e.target.select()} aria-label="Invitation link" />
             <button className="btn-ghost" onClick={async () => { await navigator.clipboard.writeText(link); toast('Link copied'); }}><Copy className="h-4 w-4" />Copy</button>

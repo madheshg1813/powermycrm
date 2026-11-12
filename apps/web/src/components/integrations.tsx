@@ -52,10 +52,95 @@ function Secret({ value, onDone, title, text }: { value: string; onDone: () => v
 export function Integrations() {
   return (
     <>
+      <EmailSetup />
       <WebsiteForms />
       <Webhooks />
       <ApiKeys />
     </>
+  );
+}
+
+type EmailStatus = { canSend: boolean; via: string | null; platformConfigured: boolean; integration: (Integration & { credentials: { host: string; port: number; secure: boolean; user: string; from: string; hasPassword: boolean } | null }) | null };
+type EmailRow = { id: string; kind: string; to: string; subject: string; status: 'QUEUED' | 'SENT' | 'FAILED' | 'SKIPPED'; provider: string | null; error: string | null; sentAt: string | null; createdAt: string };
+
+function EmailSetup() {
+  const { toast, confirm } = useUi();
+  const { busy, run } = useSave();
+  const status = useApi<EmailStatus>('/integrations/email-status');
+  const log = useApi<{ items: EmailRow[]; total: number }>('/emails?pageSize=10');
+  const blank = { host: '', port: '587', secure: false, user: '', pass: '', from: '' };
+  const [f, setF] = useState<typeof blank | null>(null);
+  const reload = () => { status.reload(); log.reload(); };
+  const i = status.data?.integration ?? null;
+  const open = () => setF(i?.credentials ? { host: i.credentials.host, port: String(i.credentials.port), secure: i.credentials.secure, user: i.credentials.user, pass: '', from: i.credentials.from } : blank);
+
+  return (
+    <section className="card">
+      <div className="card-pad pb-3">
+        <h2 className="card-title">Email</h2>
+        <p className="text-ink-muted">Invitations, password resets and verification emails are sent through your own SMTP account. Gmail, Microsoft 365, Zoho, Amazon SES and SendGrid all provide SMTP details; Gmail needs an app password.</p>
+      </div>
+      {status.error ? <ErrorState message={status.error.message} onRetry={status.reload} /> : !status.data ? <Skeleton rows={2} /> : (
+        <div className="border-y border-ink/10 px-5 py-3.5">
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="min-w-0 flex-1">
+              {i ? (
+                <>
+                  <span className="font-medium">{i.credentials?.from}</span>
+                  <span className={cx('ml-2', i.status === 'CONNECTED' ? 'pill-green' : i.status === 'ERROR' ? 'pill-danger' : 'pill-amber')}>{i.status === 'CONNECTED' ? 'Connected' : i.status === 'ERROR' ? 'Connection failed' : i.status === 'DISABLED' ? 'Paused' : 'Awaiting test'}</span>
+                  <span className="block text-[13px] text-ink-muted">{i.credentials?.host}:{i.credentials?.port}{i.credentials?.user ? ` as ${i.credentials.user}` : ''}</span>
+                  {i.lastError && <span className="block text-[13px] text-danger">{i.lastError}</span>}
+                </>
+              ) : status.data.platformConfigured ? (
+                <><span className="font-medium">Using the platform email service</span><span className="pill-green ml-2">Ready</span><span className="block text-[13px] text-ink-muted">Connect your own account to send from your address.</span></>
+              ) : (
+                <><span className="font-medium">No email connection</span><span className="pill-amber ml-2">Not connected</span><span className="block text-[13px] text-ink-muted">Invitation links are shown to you to share by hand until an account is connected.</span></>
+              )}
+            </span>
+            {i && <button className="btn-ghost btn-sm" disabled={busy} onClick={() => run(() => api(`/integrations/${i.id}/test`, { body: {} }).then(reload), 'Connection tested')}><RefreshCw className="h-3.5 w-3.5" />Test connection</button>}
+            {i?.status === 'CONNECTED' && <button className="btn-ghost btn-sm" disabled={busy} onClick={() => run(() => api(`/integrations/${i.id}/send-test`, { body: {} }).then(() => setTimeout(reload, 2500)), 'Test email queued to your address')}><Send className="h-3.5 w-3.5" />Send test email</button>}
+            <button className="btn-ghost btn-sm" onClick={open}>{i ? 'Edit' : 'Connect email'}</button>
+            {i && <button className="btn-icon" disabled={busy} aria-label="Remove email connection" onClick={async () => { if (await confirm({ title: 'Remove the email connection?', text: 'Emails will stop being sent until another account is connected.', confirmLabel: 'Remove', danger: true })) run(() => api(`/integrations/${i.id}`, { method: 'DELETE' }).then(reload), 'Email connection removed'); }}><Trash2 className="h-4 w-4" /></button>}
+          </div>
+        </div>
+      )}
+      {f && (
+        <form className="grid gap-3 card-pad sm:grid-cols-2" onSubmit={async (e) => {
+          e.preventDefault();
+          const credentials: Record<string, unknown> = { host: f.host, port: Number(f.port), secure: f.secure, user: f.user, from: f.from };
+          if (f.pass) credentials.pass = f.pass;
+          try {
+            const r = await api<Integration>(i ? `/integrations/${i.id}` : '/integrations', { method: i ? 'PATCH' : 'POST', body: i ? { credentials } : { provider: 'smtp', name: 'Email', credentials } });
+            toast(r.status === 'CONNECTED' ? 'Connected. Emails will be sent from this account.' : `Saved, but the connection failed: ${r.lastError ?? 'check the details'}`, r.status === 'CONNECTED' ? 'success' : 'error');
+            setF(null);
+            reload();
+          } catch (err) { toast((err as Error).message, 'error'); }
+        }}>
+          <Field label="SMTP host"><input className="input" value={f.host} onChange={(e) => setF({ ...f, host: e.target.value })} placeholder="smtp.gmail.com" required autoFocus /></Field>
+          <Field label="Port"><input className="input" type="number" value={f.port} onChange={(e) => setF({ ...f, port: e.target.value })} min={1} max={65535} required /></Field>
+          <Field label="Username"><input className="input" value={f.user} onChange={(e) => setF({ ...f, user: e.target.value })} placeholder="you@yourcompany.com" autoComplete="off" /></Field>
+          <Field label={i?.credentials?.hasPassword ? 'Password (leave blank to keep)' : 'Password or app password'}><input className="input" type="password" value={f.pass} onChange={(e) => setF({ ...f, pass: e.target.value })} autoComplete="new-password" /></Field>
+          <Field label="From address" hint="What recipients see" className="sm:col-span-2"><input className="input" value={f.from} onChange={(e) => setF({ ...f, from: e.target.value })} placeholder="Sales Team <sales@yourcompany.com>" required /></Field>
+          <label className="flex cursor-pointer items-center gap-2.5 sm:col-span-2"><input type="checkbox" checked={f.secure} onChange={(e) => setF({ ...f, secure: e.target.checked })} /><span>Use implicit TLS (port 465). Leave off for port 587 (STARTTLS).</span></label>
+          <div className="flex gap-2 sm:col-span-2"><button className="btn-ink" disabled={busy}>Save and test</button><button type="button" className="btn-ghost" onClick={() => setF(null)}>Cancel</button></div>
+        </form>
+      )}
+      {log.data && log.data.items.length > 0 && (
+        <details className="px-5 pb-4 text-[13px]">
+          <summary className="cursor-pointer font-medium text-ink-soft">Recent emails ({log.data.total})</summary>
+          <ul className="mt-2 divide-y divide-ink/5 rounded-xl border border-ink/10">
+            {log.data.items.map((m) => (
+              <li key={m.id} className="flex flex-wrap items-center gap-2 px-3 py-2">
+                <span className={m.status === 'SENT' ? 'pill-green' : m.status === 'FAILED' ? 'pill-danger' : m.status === 'SKIPPED' ? 'pill-amber' : 'pill-muted'}>{m.status === 'SENT' ? 'Sent' : m.status === 'FAILED' ? 'Failed' : m.status === 'SKIPPED' ? 'Not sent' : 'Queued'}</span>
+                <span className="font-medium">{m.to}</span><span className="min-w-0 flex-1 truncate text-ink-muted">{m.subject}</span>
+                {m.error && <span className="text-danger">{m.error}</span>}
+                <span className="text-ink-muted">{fmtDateTime(m.sentAt ?? m.createdAt)}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </section>
   );
 }
 

@@ -4,6 +4,7 @@ import { Test } from '@nestjs/testing';
 import { createHmac } from 'crypto';
 import * as http from 'http';
 import request from 'supertest';
+import { SMTPServer } from 'smtp-server';
 import { AppModule, configureApp } from '../src/app.module';
 import { PrismaService } from '../src/common/core';
 
@@ -1091,7 +1092,7 @@ describe('integrations: website forms and the public API', () => {
     const web = sources.find((s: any) => s.name === 'Website').id;
     await o.post('/custom-fields', { label: 'Budget', type: 'NUMBER' });
 
-    expect((await o.get('/integrations/providers')).body.providers.map((p: any) => p.key)).toEqual(['website_form']);
+    expect((await o.get('/integrations/providers')).body.providers.map((p: any) => p.key)).toEqual(['website_form', 'smtp']);
     const created = await o.post('/integrations', { provider: 'website_form', name: 'Landing page', settings: { sourceId: web, ownerId: 'auto', duplicateStrategy: 'skip' }, fieldMapping: { name: 'full_name', cf_budget: 'budget' } });
     expect(created.status).toBe(201);
     expect(created.body).toMatchObject({ status: 'CONNECTED' });
@@ -1183,6 +1184,105 @@ describe('integrations: website forms and the public API', () => {
     const other = await registerOrg('ApiKeysOther');
     expect((await other.del(`/api-keys/${k.body.id}`)).status).toBe(404);
     expect((await other.get('/leads?q=API Lead')).body.total).toBe(0);
+  });
+});
+
+/** A local SMTP server that keeps what it receives, so email delivery is tested for real. */
+function mailbox() {
+  const mails: { to: string[]; subject: string; text: string }[] = [];
+  const qp = (s: string) => s.replace(/=\r?\n/g, '').replace(/=([0-9A-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+  const server = new SMTPServer({
+    authOptional: true,
+    disabledCommands: ['STARTTLS'],
+    onData(stream, session, cb) {
+      let raw = '';
+      stream.on('data', (c) => (raw += c));
+      stream.on('end', () => {
+        const subject = /^Subject: (.*)$/m.exec(raw)?.[1] ?? '';
+        // Text part sits between the first boundary and the next; decode quoted-printable soft breaks.
+        const text = qp(raw.split(/\r?\n\r?\n/).slice(1).join('\n\n'));
+        mails.push({ to: session.envelope.rcptTo.map((r) => r.address), subject, text });
+        cb();
+      });
+    },
+  });
+  return {
+    mails,
+    start: () => new Promise<number>((resolve) => server.listen(0, '127.0.0.1', () => resolve((server.server.address() as any).port))),
+    stop: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    link: (text: string, path: string) => new RegExp(`https?://[^\\s]*${path}[^\\s]*`).exec(text)?.[0] ?? '',
+  };
+}
+
+describe('email delivery', () => {
+  const box = mailbox();
+  let port: number;
+  beforeAll(async () => { port = await box.start(); });
+  afterAll(() => box.stop());
+
+  it('connects SMTP only after a real test, then sends invitations, resets and verification emails', async () => {
+    const o = await registerOrg('Mail');
+    // Nothing is connected: the invitation link is handed back for the admin, and the email is recorded as skipped.
+    const roles = (await o.get('/roles')).body as any[];
+    const noMail = await o.post('/invitations', { email: 'first@example.com', roleId: roles.find((r) => r.name === 'Sales Agent').id });
+    expect(noMail.body.emailSent).toBe(false);
+    expect(noMail.body.inviteUrl).toContain('/invite/');
+    const status0 = (await o.get('/integrations/email-status')).body;
+    expect(status0).toMatchObject({ canSend: false, integration: null });
+
+    // Wrong port: the integration exists but is not connected, and says why.
+    const bad = await o.post('/integrations', { provider: 'smtp', name: 'Mail', credentials: { host: '127.0.0.1', port: 1, from: 'crm@test.local' } });
+    expect(bad.status).toBe(201);
+    expect(bad.body.status).toBe('ERROR');
+    expect(bad.body.lastError).toBeTruthy();
+    expect(bad.body.credentials).toMatchObject({ host: '127.0.0.1', port: 1, hasPassword: false });
+    expect(bad.body.credentials.pass).toBeUndefined();
+    expect((await o.post('/integrations', { provider: 'smtp', name: 'Second', credentials: { host: 'x', from: 'y@z.com' } })).status).toBe(409);
+    expect((await o.post(`/integrations/${bad.body.id}/send-test`)).status).toBe(400);
+    // Fix the port: a re-test connects.
+    const fixed = await o.patch(`/integrations/${bad.body.id}`, { credentials: { port } });
+    expect(fixed.body.status).toBe('CONNECTED');
+    expect((await o.get('/integrations/email-status')).body).toMatchObject({ canSend: true, via: `smtp:${bad.body.id}` });
+
+    // Test email, invitation, password reset and verification all arrive through the connection.
+    const t = await o.post(`/integrations/${bad.body.id}/send-test`);
+    expect(t.status).toBe(200);
+    await until(async () => box.mails.find((m) => m.subject.includes('test email')));
+    const inv = await o.post('/invitations', { email: 'second@example.com', roleId: roles.find((r) => r.name === 'Manager').id });
+    expect(inv.body.emailSent).toBe(true);
+    const invMail = await until(async () => box.mails.find((m) => m.to.includes('second@example.com')));
+    expect(invMail.subject).toContain('invited you');
+    const inviteToken = box.link(invMail.text, '/invite/').split('/invite/')[1];
+    expect(inviteToken).toBe(inv.body.inviteUrl.split('/invite/')[1]);
+    const accepted = await request(server).post(`/api/v1/auth/invitations/${inviteToken}/accept`).send({ name: 'Second Person', password: PW });
+    expect(accepted.status).toBe(201);
+
+    await request(server).post('/api/v1/auth/forgot-password').send({ email: o.email });
+    const resetMail = await until(async () => box.mails.find((m) => m.to.includes(o.email) && m.subject.includes('Reset')));
+    const resetToken = new URL(box.link(resetMail.text, '/reset-password')).searchParams.get('token');
+    expect((await request(server).post('/api/v1/auth/reset-password').send({ token: resetToken, password: 'another-pass-99' })).status).toBe(200);
+
+    expect((await o.get('/auth/me')).status).toBe(401); // reset signed the owner out
+    const login = await request(server).post('/api/v1/auth/login').send({ email: o.email, password: 'another-pass-99' });
+    const me = client(request.agent(server), login.body.accessToken);
+    expect((await me.get('/auth/me')).body.user.emailVerified).toBe(false);
+    const resend = await me.post('/auth/resend-verification');
+    expect(resend.body.emailSent).toBe(true);
+    const verifyMail = await until(async () => box.mails.find((m) => m.to.includes(o.email) && m.subject.includes('Verify')));
+    const verifyToken = new URL(box.link(verifyMail.text, '/verify-email')).searchParams.get('token');
+    expect((await request(server).post('/api/v1/auth/verify-email').send({ token: verifyToken })).status).toBe(200);
+    expect((await request(server).post('/api/v1/auth/verify-email').send({ token: verifyToken })).status).toBe(400);
+    expect((await me.get('/auth/me')).body.user.emailVerified).toBe(true);
+    expect((await me.post('/auth/resend-verification')).body.verified).toBe(true);
+
+    // The log shows every message with its outcome; other workspaces see nothing.
+    const log = (await me.get('/emails')).body;
+    expect(log.items.map((m: any) => [m.kind, m.status])).toEqual(expect.arrayContaining([['invitation', 'SKIPPED'], ['invitation', 'SENT'], ['test', 'SENT'], ['verify_email', 'SENT']]));
+    expect(log.items.find((m: any) => m.kind === 'invitation' && m.status === 'SKIPPED').error).toContain('No email provider');
+    const other = await registerOrg('MailOther');
+    // Registering queued the new owner's verification email (skipped, nothing connected) and nothing else.
+    expect((await other.get('/emails')).body.items.map((m: any) => [m.kind, m.status])).toEqual([['verify_email', 'SKIPPED']]);
+    expect((await other.post(`/integrations/${bad.body.id}/test`)).status).toBe(404);
   });
 });
 

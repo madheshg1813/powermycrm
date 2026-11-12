@@ -22,6 +22,7 @@ import type { Request, Response } from 'express';
 import * as jwt from 'jsonwebtoken';
 import { z } from 'zod';
 import { Context, Ctx, PrismaService, Public, jwtSecret, parse, randomToken, sha256 } from '../common/core';
+import { EmailService, layout } from './email';
 import { DEFAULT_LABELS, DEFAULT_SOURCES, DEFAULT_STAGES, SYSTEM_ROLES } from '../common/permissions';
 
 const COOKIE = 'pmc_rt';
@@ -66,7 +67,7 @@ export async function seedOrganisation(tx: Tx, organisationId: string): Promise<
 @Injectable()
 export class AuthService {
   private readonly log = new Logger('Auth');
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly email: EmailService) {}
 
   private async issueSession(userId: string, organisationId: string, req: Request, res: Response) {
     const refresh = randomToken();
@@ -121,7 +122,35 @@ export class AuthService {
       });
       return { user, org };
     });
+    await this.sendVerification(user.id, org.id);
     return this.issueSession(user.id, org.id, req, res);
+  }
+
+  /** Emails a 24-hour verification link. Returns whether an email connection existed to send it. */
+  async sendVerification(userId: string, organisationId: string | null) {
+    const user = await this.prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    if (user.emailVerifiedAt) return { emailSent: false, verified: true };
+    const token = randomToken();
+    await this.prisma.authToken.deleteMany({ where: { userId, type: 'VERIFY_EMAIL', usedAt: null } });
+    await this.prisma.authToken.create({ data: { userId, type: 'VERIFY_EMAIL', tokenHash: sha256(token), expiresAt: new Date(Date.now() + 24 * 3600e3) } });
+    const url = `${process.env.WEB_ORIGIN ?? 'http://localhost:3000'}/verify-email?token=${token}`;
+    const sent = await this.email.send({
+      organisationId, userId, kind: 'verify_email', to: user.email, subject: 'Verify your email for PowerMyCRM',
+      text: `Hi ${user.name},\n\nConfirm this is your email address: ${url}\n\nThe link is valid for 24 hours.`,
+      html: layout('Verify your email', [`Hi ${user.name},`, 'Confirm this is your email address so password resets and notifications reach you. The link is valid for 24 hours.'], { label: 'Verify email', url }),
+    });
+    return { emailSent: sent.willSend, verified: false, ...(process.env.NODE_ENV === 'test' ? { token } : {}) };
+  }
+
+  async verifyEmail(body: unknown) {
+    const { token } = parse(z.object({ token: z.string().min(10) }), body);
+    const row = await this.prisma.authToken.findUnique({ where: { tokenHash: sha256(token) } });
+    if (!row || row.type !== 'VERIFY_EMAIL' || row.usedAt || row.expiresAt < new Date()) throw new BadRequestException('This verification link is invalid or has expired');
+    await this.prisma.$transaction([
+      this.prisma.authToken.update({ where: { id: row.id }, data: { usedAt: new Date() } }),
+      this.prisma.user.update({ where: { id: row.userId }, data: { emailVerifiedAt: new Date() } }),
+    ]);
+    return { ok: true };
   }
 
   async login(body: unknown, req: Request, res: Response) {
@@ -245,12 +274,15 @@ export class AuthService {
       await this.prisma.authToken.create({
         data: { userId: user.id, type: 'RESET_PASSWORD', tokenHash: sha256(token), expiresAt: new Date(Date.now() + 3600e3) },
       });
-      // No email provider is connected yet (see docs/KNOWN_LIMITATIONS.md). Outside production the
-      // link is written to the server log so the flow can be exercised.
-      if (process.env.NODE_ENV !== 'production') {
-        this.log.warn(`Password reset link for ${user.email}: ${process.env.WEB_ORIGIN ?? 'http://localhost:3000'}/reset-password?token=${token}`);
-      }
-      return { ok: true, ...(process.env.NODE_ENV === 'test' ? { token } : {}) };
+      const url = `${process.env.WEB_ORIGIN ?? 'http://localhost:3000'}/reset-password?token=${token}`;
+      const sent = await this.email.send({
+        organisationId: null, userId: user.id, kind: 'password_reset', to: user.email, subject: 'Reset your PowerMyCRM password',
+        text: `Hi ${user.name},\n\nUse this link to choose a new password: ${url}\n\nIt is valid for one hour. If you did not ask for this, you can ignore this email.`,
+        html: layout('Reset your password', [`Hi ${user.name},`, 'Use the button below to choose a new password. The link is valid for one hour.', 'If you did not ask for this, you can ignore this email.'], { label: 'Choose a new password', url }),
+      });
+      // Without any email connection, the link is written to the server log outside production so the flow can still be exercised.
+      if (!sent.willSend && process.env.NODE_ENV !== 'production') this.log.warn(`Password reset link for ${user.email}: ${url}`);
+      return { ok: true, emailSent: sent.willSend, ...(process.env.NODE_ENV === 'test' ? { token } : {}) };
     }
     return { ok: true };
   }
@@ -380,6 +412,18 @@ export class AuthController {
   @Post('invitations/:token/accept')
   accept(@Param('token') token: string, @Body() body: unknown, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     return this.auth.acceptInvitation(token, body, req, res);
+  }
+
+  @Public() @Throttle({ default: { limit: 10, ttl: 60_000 } }) @HttpCode(200)
+  @Post('verify-email')
+  verifyEmail(@Body() body: unknown) {
+    return this.auth.verifyEmail(body);
+  }
+
+  @Throttle({ default: { limit: 3, ttl: 60_000 } }) @HttpCode(200)
+  @Post('resend-verification')
+  resendVerification(@Context() ctx: Ctx) {
+    return this.auth.sendVerification(ctx.userId, ctx.orgId);
   }
 
   @Get('me')

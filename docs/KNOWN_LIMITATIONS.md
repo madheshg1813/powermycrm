@@ -4,7 +4,7 @@
 
 | Area | Effect today | Needs |
 |---|---|---|
-| Email delivery | Invitation links are shown to the admin to share. Password-reset links are written to the API server log outside production. Email verification is not sent. | SMTP or transactional email provider credentials |
+| Email delivery | Works once a workspace connects an SMTP account (Settings → Integrations → Email) or the platform SMTP is set in the environment. Until then invitation links are shown to the admin, reset links are written to the API log outside production, and verification emails are recorded as "not sent". | The customer's SMTP details (Gmail app password, Microsoft 365, SES, SendGrid…) |
 | Third-party lead sources, calling, WhatsApp, SMS, payment gateways | The integration framework, queue and event log are built; website forms and the API-key capture work end to end. Every provider that needs third-party credentials (Meta, IndiaMART, Justdial, Razorpay, telephony, WhatsApp Cloud API) is not connectable yet and is not shown as such. The lead page "Call" and "Email" buttons only open the device's phone or mail app and are not logged. | Platform credentials from the product owner; see `INTEGRATION_ARCHITECTURE.md` |
 
 ## Functional gaps in built modules
@@ -20,7 +20,7 @@
 - Webhook deliveries retry five times with exponential backoff (about 1 min, 2 min, 4 min, 8 min, 16 min with jitter, capped at 12 h), then park as failed for manual retry. Receivers must answer within 10 seconds. Outbox events older than 30 seconds that were not dispatched are swept once a minute.
 - Website form endpoints accept cross-origin browser posts from any site (they are meant to be public); abuse protection is the per-IP rate limit, the honeypot field and the token.
 - Notifications are in-app only and refresh every 60 seconds (no WebSocket or push yet).
-- No multi-factor authentication, email verification or password-policy settings.
+- No multi-factor authentication or password-policy settings. Verifying the email is encouraged by a banner but not enforced.
 - The audit log has an API endpoint but no screen.
 - The organisation's date-format and timezone settings are stored but not yet applied to displayed dates.
 - No super-admin panel, subscriptions or usage limits.

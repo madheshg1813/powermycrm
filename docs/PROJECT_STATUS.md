@@ -12,7 +12,7 @@ PowerMyCRM is **not** at feature parity with TeleCRM and is not production-ready
 | Phase | Scope | Status |
 |---|---|---|
 | 0 | Monorepo, PostgreSQL, design system, app shell | Completed |
-| 1 | Auth, organisations, users, invitations, roles, teams, audit log | Completed, except email delivery, MFA and email verification |
+| 1 | Auth, organisations, users, invitations, roles, teams, audit log | Completed, including email delivery and email verification (session 3). MFA not started |
 | 2 | Leads | Core completed, plus custom fields, saved views and round-robin assignment rules (session 2) and static lead lists, custom-field filters, sorting and columns (session 3). Dynamic lists, attachments, conditional rules, Excel (.xlsx) import not started |
 | 3 | Pipelines and Kanban | Core completed; deals (opportunities) with forecast completed (session 3). SLA timers, required fields per stage not started |
 | 4 | Tasks and follow-ups | Core completed; calendar view, recurring tasks, reminders and push not started |
@@ -24,7 +24,8 @@ PowerMyCRM is **not** at feature parity with TeleCRM and is not production-ready
 
 ## What works today
 
-- Register an organisation, log in, log out, reset password, rotate sessions, sign out devices.
+- Register an organisation, log in, log out, reset password, rotate sessions, sign out devices, verify your email address (24-hour link, resend from the banner).
+- Email delivery: each workspace connects its own SMTP account under Settings → Integrations → Email (status becomes "connected" only after a real login to the server; "send test email" proves it end to end). A platform-wide SMTP can be set in the environment as a fallback. Invitations, password resets and verification emails go through the queue and are logged with their outcome. With no connection, invitation links are still shown to the admin to share by hand.
 - Invite users by link, accept invitations, roles with 14 permissions and own/team/all record scope, custom roles, teams, deactivate users.
 - Leads: create, edit, search, filter (including by any custom field: text contains, number range, date range, option, yes/no), sort (built-in columns or any custom field), optional custom-field columns, paginate, bulk assign / move stage / label / archive / restore, permanent delete, duplicate detection on phone and email, merge, CSV import with column mapping and duplicate strategy, CSV export, notes, activity timeline, assignment notifications.
 - Lead lists: static named lists; add or remove selected leads in bulk from the leads page or the lead page, filter the leads list by list, manage lists (rename, describe, delete) in Settings. Counts respect the user's record scope.
@@ -56,8 +57,8 @@ workspace login is recorded in `.env.local` (git-ignored).
 
 ## Next tasks, in order
 
-1. Done in session 3: static lead lists; reports; custom-field filters, sort and columns; deals with forecast; payments; job queue, outbox, webhooks, website forms and the public API.
-2. Email provider so invitations, password resets and verification are actually sent (now possible through the queue).
+1. Done in session 3: static lead lists; reports; custom-field filters, sort and columns; deals with forecast; payments; job queue, outbox, webhooks, website forms, the public API, SMTP email delivery and email verification.
+2. Lead attachments (local-disk storage adapter, S3 later), dynamic lists, call logging, workflow automation, super-admin panel, installable PWA.
 3. Dynamic lists, conditional assignment rules, lead attachments (needs `StorageService`).
 4. Won/lost reasons, forecasting, stage SLA and ageing.
 5. Calendar view, recurring tasks, reminder scheduler (needs the job queue).

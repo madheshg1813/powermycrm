@@ -108,11 +108,36 @@ export function Shell({ children }: { children: React.ReactNode }) {
             </Dropdown>
           </div>
         </header>
+        {!me.user.emailVerified && <VerifyBanner />}
         <main className="flex-1 px-3 py-5 sm:px-6 sm:py-7">{children}</main>
       </div>
 
       <LeadForm open={leadForm} onClose={() => setLeadForm(false)} onSaved={(l) => router.push(`/leads/${l.id}`)} />
       <TaskForm open={taskForm} onClose={() => setTaskForm(false)} />
+    </div>
+  );
+}
+
+/** Shown until the user's email address is verified. Resending only works once an email connection exists. */
+function VerifyBanner() {
+  const { me } = useAuth();
+  const [state, setState] = useState<'idle' | 'busy' | 'sent' | 'nomail' | 'error'>('idle');
+  const [hidden, setHidden] = useState(false);
+  useEffect(() => { try { setHidden(sessionStorage.getItem('pmc:verify-hidden') === '1'); } catch { /* ignore */ } }, []);
+  if (hidden || !me) return null;
+  const resend = async () => {
+    setState('busy');
+    try { const r = await api<{ emailSent: boolean }>('/auth/resend-verification', { body: {} }); setState(r.emailSent ? 'sent' : 'nomail'); }
+    catch { setState('error'); }
+  };
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-amber/20 bg-amber-soft px-3 py-2 text-[13px] text-amber sm:px-6" role="status">
+      <span className="font-medium">Verify your email address ({me.user.email}) so password resets reach you.</span>
+      {state === 'sent' ? <span>Verification email sent. Check your inbox.</span>
+        : state === 'nomail' ? <span>No email connection is set up yet. An administrator can add one under Settings → Integrations.</span>
+        : state === 'error' ? <span>Could not send right now. Try again in a minute.</span>
+        : <button className="font-semibold underline" onClick={resend} disabled={state === 'busy'}>{state === 'busy' ? 'Sending…' : 'Resend verification email'}</button>}
+      <button className="ml-auto text-amber/70 hover:text-amber" onClick={() => { setHidden(true); try { sessionStorage.setItem('pmc:verify-hidden', '1'); } catch { /* ignore */ } }} aria-label="Hide for this session">Hide</button>
     </div>
   );
 }

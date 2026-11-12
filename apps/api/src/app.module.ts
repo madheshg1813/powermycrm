@@ -6,6 +6,7 @@ import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { AuthGuard, PrismaService, Public } from './common/core';
 import { QueueService } from './common/queue';
+import { EmailController, EmailService } from './modules/email';
 import { ApiKeysController, IntegrationsController } from './modules/integrations';
 import { OutboxService, WebhooksController } from './modules/webhooks';
 import { AuthController, AuthService } from './modules/auth';
@@ -37,11 +38,12 @@ class HealthController {
       skipIf: () => process.env.NODE_ENV === 'test',
     }),
   ],
-  controllers: [HealthController, AuthController, OrgController, CatalogController, CustomiseController, LeadsController, ListsController, TasksController, DashboardController, ReportsController, OpportunitiesController, PaymentsController, WebhooksController, IntegrationsController, ApiKeysController],
+  controllers: [HealthController, AuthController, OrgController, CatalogController, CustomiseController, LeadsController, ListsController, TasksController, DashboardController, ReportsController, OpportunitiesController, PaymentsController, WebhooksController, IntegrationsController, ApiKeysController, EmailController],
   providers: [
     PrismaService,
     QueueService,
     OutboxService,
+    EmailService,
     AuthService,
     LeadsService,
     { provide: APP_GUARD, useClass: ThrottlerGuard },

@@ -91,6 +91,7 @@ model Organisation {
   webhooks      WebhookEndpoint[]
   integrations  Integration[]
   apiKeys       ApiKey[]
+  emails        EmailMessage[]
 }
 
 enum FieldType {
@@ -659,6 +660,36 @@ model IntegrationEvent {
   @@unique([integrationId, externalId])
   @@index([integrationId, createdAt])
   @@index([organisationId, status])
+}
+
+enum EmailStatus {
+  QUEUED
+  SENT
+  FAILED
+  SKIPPED
+}
+
+/// Every outgoing email, whoever sends it. Delivered by the worker through SMTP; kept as a log.
+model EmailMessage {
+  id             String      @id @default(cuid())
+  organisationId String?
+  userId         String?
+  kind           String
+  to             String
+  subject        String
+  text           String
+  html           String?
+  status         EmailStatus @default(QUEUED)
+  provider       String?
+  providerRef    String?
+  error          String?
+  attempts       Int         @default(0)
+  sentAt         DateTime?
+  createdAt      DateTime    @default(now())
+
+  organisation Organisation? @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+
+  @@index([organisationId, createdAt])
 }
 
 /// Bearer keys for the public lead-capture API. Only the SHA-256 hash is stored.

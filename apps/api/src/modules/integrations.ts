@@ -3,7 +3,9 @@ import { Prisma } from '@prisma/client';
 import { Request, Response } from 'express';
 import { z } from 'zod';
 import { Context, Ctx, Perm, PrismaService, Public, audit, pageSchema, parse, randomToken, sha256 } from '../common/core';
+import { ConflictException } from '@nestjs/common';
 import { QueueService, decrypt, encrypt, safeEqual } from '../common/queue';
+import { EmailService, layout, smtpSchema } from './email';
 import { IngestOptions, LeadsService } from './leads';
 
 // ---- Provider registry ---------------------------------------------------------
@@ -17,8 +19,26 @@ export const PROVIDERS = [
     category: 'lead_source',
     auth: 'webhook_only',
     description: 'Post your website or landing-page form to a PowerMyCRM endpoint. Each submission becomes a lead, de-duplicated and auto-assigned by your rules.',
+    credentialSchema: [] as CredentialField[],
+  },
+  {
+    key: 'smtp',
+    name: 'Email (SMTP)',
+    category: 'messaging',
+    auth: 'credentials',
+    description: 'Send invitations, password resets and verification emails from your own mail account or transactional email service (Gmail with an app password, Microsoft 365, Amazon SES, SendGrid, Zoho…).',
+    credentialSchema: [
+      { key: 'host', label: 'SMTP host', type: 'text', placeholder: 'smtp.gmail.com' },
+      { key: 'port', label: 'Port', type: 'number', placeholder: '587' },
+      { key: 'secure', label: 'Use implicit TLS (port 465)', type: 'boolean' },
+      { key: 'user', label: 'Username', type: 'text', placeholder: 'you@yourcompany.com' },
+      { key: 'pass', label: 'Password or app password', type: 'password' },
+      { key: 'from', label: 'From address', type: 'text', placeholder: 'Sales Team <sales@yourcompany.com>' },
+    ] as CredentialField[],
   },
 ] as const;
+export type CredentialField = { key: string; label: string; type: 'text' | 'number' | 'boolean' | 'password'; placeholder?: string };
+type ProviderKey = (typeof PROVIDERS)[number]['key'];
 
 /** CRM fields a website form can fill. `cf_<key>` entries are added per workspace from its custom fields. */
 export const MAPPABLE_FIELDS = ['name', 'phone', 'email', 'company', 'city', 'message', 'source'] as const;
@@ -31,11 +51,24 @@ const settingsSchema = z.object({
   redirectUrl: z.string().trim().url().max(500).nullable().default(null),
 });
 const integrationSchema = z.object({
-  provider: z.enum(['website_form']),
+  provider: z.enum(['website_form', 'smtp']),
   name: z.string().trim().min(1, 'Name the integration').max(80),
   settings: settingsSchema.default({}),
   fieldMapping: z.record(z.string(), z.string().trim().max(80)).default({}),
+  credentials: z.record(z.string(), z.any()).optional(),
 });
+/** Validates provider credentials and returns what is stored (encrypted). */
+function cleanCredentials(provider: ProviderKey, raw: unknown, existing?: Record<string, unknown>): Record<string, unknown> {
+  if (provider === 'smtp') {
+    const merged = { ...(existing ?? {}), ...((raw ?? {}) as Record<string, unknown>) };
+    // A blank password on edit keeps the stored one.
+    if (existing && !(raw as Record<string, unknown>)?.pass) merged.pass = existing.pass;
+    const r = smtpSchema.safeParse(merged);
+    if (!r.success) throw new BadRequestException({ message: r.error.issues[0]?.message ?? 'Check the SMTP details', errors: r.error.issues.map((i) => ({ path: `credentials.${i.path.join('.')}`, message: i.message })) });
+    return r.data;
+  }
+  return {};
+}
 const publicUrl = () => (process.env.API_PUBLIC_URL ?? 'http://localhost:4000').replace(/\/$/, '');
 
 /** Maps a raw submission to lead fields using the integration's mapping (CRM field -> form field name). */
@@ -59,6 +92,7 @@ export class IntegrationsController implements OnModuleInit {
     private readonly prisma: PrismaService,
     private readonly queue: QueueService,
     private readonly leads: LeadsService,
+    private readonly email: EmailService,
   ) {}
 
   onModuleInit() {
@@ -138,12 +172,29 @@ export class IntegrationsController implements OnModuleInit {
   }
 
   private present(i: { id: string; provider: string; name: string; status: string; settings: unknown; fieldMapping: unknown; credentials: string | null; lastError: string | null; lastEventAt: Date | null; createdAt: Date }) {
-    const token = i.credentials ? (JSON.parse(decrypt(i.credentials)) as { token: string }).token : null;
+    const creds = i.credentials ? (JSON.parse(decrypt(i.credentials)) as Record<string, unknown>) : null;
+    // Secrets never leave the server: forms get their token (it is embedded in public HTML anyway); SMTP gets everything but the password.
+    const token = i.provider === 'website_form' && creds ? String(creds.token) : null;
+    const credentials = i.provider === 'smtp' && creds ? { host: creds.host, port: creds.port, secure: creds.secure, user: creds.user, from: creds.from, hasPassword: !!creds.pass } : null;
     return {
       id: i.id, provider: i.provider, name: i.name, status: i.status, settings: i.settings, fieldMapping: i.fieldMapping, lastError: i.lastError, lastEventAt: i.lastEventAt, createdAt: i.createdAt,
-      token,
+      token, credentials,
       endpointUrl: i.provider === 'website_form' ? `${publicUrl()}/api/v1/hooks/website_form/${i.id}` : null,
     };
+  }
+
+  /** Runs the provider's connection test against the real service and records the outcome. */
+  private async testConnection(i: { id: string; provider: string; credentials: string | null }) {
+    try {
+      if (i.provider === 'smtp') {
+        if (!i.credentials) throw new Error('No SMTP details saved yet');
+        await this.email.verify(smtpSchema.parse(JSON.parse(decrypt(i.credentials))));
+      }
+      return this.prisma.integration.update({ where: { id: i.id }, data: { status: 'CONNECTED', lastError: null } });
+    } catch (e) {
+      const message = ((e as Error).message || 'Connection failed').slice(0, 300);
+      return this.prisma.integration.update({ where: { id: i.id }, data: { status: 'ERROR', lastError: message } });
+    }
   }
 
   private async checkSettings(ctx: Ctx, s: z.infer<typeof settingsSchema>) {
@@ -155,6 +206,14 @@ export class IntegrationsController implements OnModuleInit {
   async providers(@Context() ctx: Ctx) {
     const fields = await this.prisma.customField.findMany({ where: { organisationId: ctx.orgId }, orderBy: { position: 'asc' } });
     return { providers: PROVIDERS, mappableFields: [...MAPPABLE_FIELDS, ...fields.map((f) => `cf_${f.key}`)], fieldLabels: Object.fromEntries(fields.map((f) => [`cf_${f.key}`, f.label])) };
+  }
+
+  /** Whether email can be sent for this workspace, and through what. */
+  @Perm('settings.manage') @Get('integrations/email-status')
+  async emailStatus(@Context() ctx: Ctx) {
+    const transport = await this.email.transportFor(ctx.orgId);
+    const own = await this.prisma.integration.findFirst({ where: { organisationId: ctx.orgId, provider: 'smtp' } });
+    return { canSend: !!transport, via: transport?.provider ?? null, platformConfigured: !!process.env.SMTP_HOST, integration: own ? this.present(own) : null };
   }
 
   @Perm('settings.manage') @Get('integrations')
@@ -174,23 +233,54 @@ export class IntegrationsController implements OnModuleInit {
     const d = parse(integrationSchema, body);
     await this.checkSettings(ctx, d.settings);
     if ((await this.prisma.integration.count({ where: { organisationId: ctx.orgId } })) >= 50) throw new BadRequestException('A workspace can have up to 50 integrations');
-    const token = `pmf_${randomToken()}`;
+    if (d.provider === 'smtp' && (await this.prisma.integration.findFirst({ where: { organisationId: ctx.orgId, provider: 'smtp' } }))) throw new ConflictException('This workspace already has an email connection; edit it instead');
     // A website form has nothing external to test against: its endpoint exists as soon as it is saved.
+    // Credential-based providers start as "awaiting credentials" and become connected only after a successful test.
+    const stored = d.provider === 'website_form' ? { token: `pmf_${randomToken()}` } : cleanCredentials(d.provider, d.credentials);
     const i = await this.prisma.integration.create({
-      data: { organisationId: ctx.orgId, provider: d.provider, name: d.name, status: 'CONNECTED', credentials: encrypt(JSON.stringify({ token })), settings: d.settings as Prisma.InputJsonObject, fieldMapping: d.fieldMapping as Prisma.InputJsonObject, createdById: ctx.userId },
+      data: { organisationId: ctx.orgId, provider: d.provider, name: d.name, status: d.provider === 'website_form' ? 'CONNECTED' : 'AWAITING_CREDENTIALS', credentials: encrypt(JSON.stringify(stored)), settings: d.settings as Prisma.InputJsonObject, fieldMapping: d.fieldMapping as Prisma.InputJsonObject, createdById: ctx.userId },
     });
     await audit(this.prisma, ctx, 'integration.created', 'integration', i.id, { provider: d.provider, name: d.name });
-    return this.present(i);
+    return this.present(d.provider === 'website_form' ? i : await this.testConnection(i));
   }
 
   @Perm('settings.manage') @Patch('integrations/:id')
   async update(@Context() ctx: Ctx, @Param('id') id: string, @Body() body: unknown) {
     const d = parse(integrationSchema.omit({ provider: true }).partial().extend({ status: z.enum(['CONNECTED', 'DISABLED']).optional() }), body);
-    await this.find(ctx, id);
+    const existing = await this.find(ctx, id);
     if (d.settings) await this.checkSettings(ctx, d.settings);
-    const i = await this.prisma.integration.update({ where: { id }, data: { name: d.name, settings: d.settings as Prisma.InputJsonObject | undefined, fieldMapping: d.fieldMapping as Prisma.InputJsonObject | undefined, status: d.status, lastError: d.status === 'CONNECTED' ? null : undefined } });
-    await audit(this.prisma, ctx, 'integration.updated', 'integration', id, { status: d.status, name: d.name });
-    return this.present(i);
+    let credentials: string | undefined;
+    if (d.credentials && existing.provider !== 'website_form') {
+      const current = existing.credentials ? (JSON.parse(decrypt(existing.credentials)) as Record<string, unknown>) : undefined;
+      credentials = encrypt(JSON.stringify(cleanCredentials(existing.provider as ProviderKey, d.credentials, current)));
+    }
+    // Re-enabling a credential-based provider, or changing its credentials, re-runs the connection test.
+    if (d.status === 'CONNECTED' && existing.provider !== 'website_form') d.status = undefined;
+    const i = await this.prisma.integration.update({ where: { id }, data: { name: d.name, settings: d.settings as Prisma.InputJsonObject | undefined, fieldMapping: d.fieldMapping as Prisma.InputJsonObject | undefined, credentials, status: d.status, lastError: d.status === 'CONNECTED' ? null : undefined } });
+    await audit(this.prisma, ctx, 'integration.updated', 'integration', id, { status: d.status, name: d.name, credentialsChanged: !!credentials });
+    const retest = existing.provider !== 'website_form' && (!!credentials || (body as { status?: string })?.status === 'CONNECTED');
+    return this.present(retest ? await this.testConnection(i) : i);
+  }
+
+  /** Connection test on demand. */
+  @Perm('settings.manage') @Post('integrations/:id/test') @HttpCode(200)
+  async test(@Context() ctx: Ctx, @Param('id') id: string) {
+    const i = await this.find(ctx, id);
+    if (i.provider === 'website_form') return this.present(i);
+    const r = await this.testConnection(i);
+    await audit(this.prisma, ctx, 'integration.tested', 'integration', id, { status: r.status });
+    return this.present(r);
+  }
+
+  /** Sends a real test email to the signed-in user through the connected SMTP integration. */
+  @Perm('settings.manage') @Post('integrations/:id/send-test') @HttpCode(200)
+  async sendTest(@Context() ctx: Ctx, @Param('id') id: string) {
+    const i = await this.find(ctx, id);
+    if (i.provider !== 'smtp') throw new BadRequestException('Only an email connection can send a test message');
+    if (i.status !== 'CONNECTED') throw new BadRequestException('Test the connection first');
+    const user = await this.prisma.user.findUniqueOrThrow({ where: { id: ctx.userId } });
+    const r = await this.email.send({ organisationId: ctx.orgId, userId: ctx.userId, kind: 'test', to: user.email, subject: 'PowerMyCRM test email', text: 'This is a test email from PowerMyCRM. Your email connection works.', html: layout('Your email connection works', ['This is a test email from PowerMyCRM.', 'Invitations, password resets and verification emails will be sent through this connection.']) });
+    return { emailId: r.id };
   }
 
   @Perm('settings.manage') @Post('integrations/:id/rotate-token') @HttpCode(200)

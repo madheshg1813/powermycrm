@@ -45,8 +45,9 @@ the browser, **None** = untested. Rows marked (ext) go beyond what TeleCRM docum
 | Custom report | /features 3.6 | — | Not Started | None |
 | Mobile app | /call-center-crm | Responsive web layouts written, not verified on a phone | Frontend In Progress | None |
 | Multi-tenant workspaces (ext) | — | Organisation isolation in every query | Completed | API |
-| Auth, sessions, password reset (ext) | — | JWT + rotating refresh cookie, Argon2id, device list | Completed (email delivery Integration Pending) | API + Manual (register) |
-| Invitations (ext) | — | Link-based, 7-day expiry | Integration Pending (email) | API; screen None |
+| Auth, sessions, password reset (ext) | — | JWT + rotating refresh cookie, Argon2id, device list, password reset and email verification by email | Completed | API + Manual (register) |
+| Invitations (ext) | — | Emailed through the workspace SMTP connection (link shown to the admin as a fallback), 7-day expiry | Testing | API (real SMTP server in tests); screen Manual |
+| Email (SMTP) connection (ext) | — | Per-workspace SMTP credentials, connection test, test email, send log | Testing | API + Manual |
 | Audit log (ext) | — | Recorded and served by API; no screen | Backend In Progress | API |
 | MFA (ext) | — | — | Not Started | None |
 | Super admin, plans, billing (ext) | /pricing | — | Not Started | None |

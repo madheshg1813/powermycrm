@@ -12,6 +12,9 @@ The organisation is always taken from the token, never from the request.
 | POST `/auth/forgot-password`, `/auth/reset-password` | public | Password reset |
 | GET `/auth/invitations/:token`, POST `…/accept` | public | Invitation details and acceptance |
 | GET `/auth/me`, POST `/auth/profile`, `/auth/switch`, `/auth/change-password` | signed in | Profile and workspace switching |
+| POST `/auth/verify-email` (public), POST `/auth/resend-verification` | public / signed in | Email verification |
+| GET `/emails` | `settings.manage` | Outgoing email log |
+| GET `/integrations/email-status`; POST `/integrations/:id/test`, `/integrations/:id/send-test` | `settings.manage` | Email connection status, connection test (any credential-based provider), test email (SMTP) |
 | GET `/auth/sessions`, DELETE `/auth/sessions/:id` | signed in | Devices |
 | GET, PATCH `/organisation` | — / `settings.manage` | Organisation settings |
 | GET `/users`, PATCH `/users/:membershipId` | — / `users.manage` | Members, role, team, status |

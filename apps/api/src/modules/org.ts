@@ -15,6 +15,7 @@ import {
 } from '@nestjs/common';
 import { z } from 'zod';
 import { Context, Ctx, Perm, PrismaService, audit, parse, randomToken, sha256 } from '../common/core';
+import { EmailService, layout } from './email';
 import { ALL_PERMISSION_KEYS, PERMISSIONS } from '../common/permissions';
 
 const roleSchema = z.object({
@@ -25,7 +26,10 @@ const roleSchema = z.object({
 
 @Controller()
 export class OrgController {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly email: EmailService,
+  ) {}
 
   // ---- Organisation -------------------------------------------------------
 
@@ -143,8 +147,16 @@ export class OrgController {
       },
     });
     await audit(this.prisma, ctx, 'invitation.created', 'invitation', inv.id, { email: data.email, role: role.name });
-    // No email provider is connected yet, so the link is returned once for the admin to share.
-    return { id: inv.id, email: inv.email, inviteUrl: `${process.env.WEB_ORIGIN ?? 'http://localhost:3000'}/invite/${token}`, emailSent: false };
+    const inviteUrl = `${process.env.WEB_ORIGIN ?? 'http://localhost:3000'}/invite/${token}`;
+    const [organisation, inviter] = await Promise.all([this.prisma.organisation.findUniqueOrThrow({ where: { id: ctx.orgId } }), this.prisma.user.findUniqueOrThrow({ where: { id: ctx.userId } })]);
+    const sent = await this.email.send({
+      organisationId: ctx.orgId, userId: null, kind: 'invitation', to: inv.email,
+      subject: `${inviter.name} invited you to ${organisation.name} on PowerMyCRM`,
+      text: `${inviter.name} has invited you to join ${organisation.name} on PowerMyCRM as ${role.name}.\n\nAccept the invitation: ${inviteUrl}\n\nThe link is valid for 7 days.`,
+      html: layout(`Join ${organisation.name}`, [`${inviter.name} has invited you to join ${organisation.name} on PowerMyCRM as ${role.name}.`, 'The link is valid for 7 days.'], { label: 'Accept invitation', url: inviteUrl }),
+    });
+    // When no email connection exists the link is returned once for the admin to share by hand.
+    return { id: inv.id, email: inv.email, inviteUrl, emailSent: sent.willSend };
   }
 
   @Perm('users.manage')
