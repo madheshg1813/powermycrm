@@ -1,6 +1,6 @@
 'use client';
 import {
-  Banknote, BarChart3, Bell, Building2, CalendarCheck, ChevronsLeft, Handshake, ChevronsRight, ChevronDown, Columns3, LayoutDashboard, Menu, Plus, Search, Settings, UserPlus, Users, UsersRound,
+  Banknote, BarChart3, Bell, Building2, CalendarCheck, ChevronsLeft, Handshake, ShieldCheck, ChevronsRight, ChevronDown, Columns3, LayoutDashboard, Menu, Plus, Search, Settings, UserPlus, Users, UsersRound,
 } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
@@ -44,6 +44,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const setup: NavItem[] = [
     { href: '/team', label: 'Team', icon: UsersRound, show: can('users.view') || can('users.manage') || can('roles.manage') },
     { href: '/settings', label: 'Settings', icon: Settings },
+    { href: '/admin', label: 'Platform admin', icon: ShieldCheck, show: me.user.isSuperAdmin },
   ];
 
   const nav = (items: NavItem[], compact: boolean) =>

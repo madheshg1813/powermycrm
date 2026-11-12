@@ -33,7 +33,7 @@ export default function SettingsPage() {
       <Tabs value={tab} onChange={setTab} tabs={tabs} />
       <div className="mt-5 space-y-5">
         {tab === 'account' && <Account />}
-        {tab === 'organisation' && <Organisation />}
+        {tab === 'organisation' && <><Organisation /><PlanCard /></>}
         {tab === 'pipeline' && <Stages />}
         {tab === 'sources' && <NamedList kind="sources" title="Lead sources" hint="Where your leads come from. Deleting a source keeps its leads and clears their source." />}
         {tab === 'labels' && <NamedList kind="labels" title="Labels" hint="Colour-coded tags for segmenting leads." withColor />}
@@ -152,6 +152,36 @@ function Organisation() {
       </div>
       <button className="btn-ink mt-4" disabled={busy}>{busy && <Spinner />}Save organisation</button>
     </form>
+  );
+}
+
+type PlanInfo = { plan: { name: string; key: string; priceMonthly: number; currency: string; limits: Record<string, number> }; status: string; usage: Record<string, number>; available: { id: string; key: string; name: string; priceMonthly: number; currency: string; limits: Record<string, number> }[]; selfServiceBilling: boolean };
+const LIMIT_LABELS: Record<string, string> = { users: 'Users', leads: 'Leads', automations: 'Automations', storageMb: 'File storage (MB)', webhooks: 'Webhook endpoints' };
+
+function PlanCard() {
+  const info = useApi<PlanInfo>('/organisation/plan');
+  if (info.error) return <div className="card"><ErrorState message={info.error.message} onRetry={info.reload} /></div>;
+  if (!info.data) return <div className="card"><Skeleton rows={3} /></div>;
+  const d = info.data;
+  return (
+    <section className="card card-pad">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="card-title">Plan: {d.plan.name}</h2>
+        <span className="text-[13px] text-ink-muted">{d.plan.priceMonthly ? `${d.plan.currency} ${d.plan.priceMonthly.toLocaleString('en-IN')} per month` : 'Free'}{d.status !== 'ACTIVE' ? ` · ${d.status.toLowerCase().replace('_', ' ')}` : ''}</span>
+      </div>
+      <ul className="mt-3 space-y-2.5">
+        {Object.entries(LIMIT_LABELS).map(([k, label]) => {
+          const used = d.usage[k] ?? 0, limit = d.plan.limits[k] ?? 0, pct = limit ? Math.min(100, (used / limit) * 100) : 0;
+          return (
+            <li key={k}>
+              <div className="flex justify-between text-[13px]"><span>{label}</span><span className={pct >= 90 ? 'font-semibold text-amber' : 'text-ink-muted'}>{used.toLocaleString('en-IN')} of {limit.toLocaleString('en-IN')}</span></div>
+              <div className="mt-1 h-1.5 rounded-full bg-ink/5"><div className={pct >= 90 ? 'h-full rounded-full bg-amber' : 'h-full rounded-full bg-ink'} style={{ width: `${pct}%` }} /></div>
+            </li>
+          );
+        })}
+      </ul>
+      <p className="mt-4 text-[13px] text-ink-muted">{d.selfServiceBilling ? 'Change your plan below.' : 'To change plans, contact the platform team. Other plans: ' + d.available.filter((p) => p.key !== d.plan.key).map((p) => `${p.name} (${p.priceMonthly ? `${p.currency} ${p.priceMonthly.toLocaleString('en-IN')}/month` : 'free'})`).join(', ')}</p>
+    </section>
   );
 }
 

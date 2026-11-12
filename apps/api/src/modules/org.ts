@@ -15,6 +15,7 @@ import {
 } from '@nestjs/common';
 import { z } from 'zod';
 import { Context, Ctx, Perm, PrismaService, audit, parse, randomToken, sha256 } from '../common/core';
+import { PlanService } from './admin';
 import { EmailService, layout } from './email';
 import { ALL_PERMISSION_KEYS, PERMISSIONS } from '../common/permissions';
 
@@ -29,6 +30,7 @@ export class OrgController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly email: EmailService,
+    private readonly plans: PlanService,
   ) {}
 
   // ---- Organisation -------------------------------------------------------
@@ -133,6 +135,7 @@ export class OrgController {
     if (role.systemKey === 'owner' && ctx.roleKey !== 'owner') throw new ForbiddenException('Only an owner can invite another owner');
     const member = await this.prisma.membership.findFirst({ where: { organisationId: ctx.orgId, user: { email: data.email } } });
     if (member) throw new ConflictException('This person is already in your workspace');
+    await this.plans.check(ctx.orgId, 'users');
 
     const token = randomToken();
     await this.prisma.invitation.deleteMany({ where: { organisationId: ctx.orgId, email: data.email, acceptedAt: null } });

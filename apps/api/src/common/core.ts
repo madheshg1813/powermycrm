@@ -90,6 +90,12 @@ export class AuthGuard implements CanActivate {
     ]);
     if (!membership || !session) throw new UnauthorizedException('Session is no longer valid');
 
+    // Platform routes: the user must carry the super-admin flag (set from SUPER_ADMIN_EMAILS at sign-in).
+    if (this.reflector.getAllAndOverride<boolean>('isSuperAdmin', targets)) {
+      const user = await this.prisma.user.findUnique({ where: { id: payload.sub }, select: { isSuperAdmin: true } });
+      if (!user?.isSuperAdmin) throw new ForbiddenException('This area is for platform administrators');
+    }
+
     const perms = new Set(membership.role.permissions);
     const required = this.reflector.getAllAndOverride<string[]>(PERMS, targets) ?? [];
     for (const key of required) {

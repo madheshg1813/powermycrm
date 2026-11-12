@@ -1472,6 +1472,64 @@ describe('email delivery', () => {
   });
 });
 
+describe('super admin and plans', () => {
+  it('limits workspaces to their plan and lets platform admins manage organisations and plans', async () => {
+    const o = await registerOrg('Planned');
+    const prisma = app.get(PrismaService);
+    const plan = (await o.get('/organisation/plan')).body;
+    expect(plan.plan.key).toBe('free');
+    expect(plan.usage).toMatchObject({ users: 1, leads: 0 });
+    expect(plan.selfServiceBilling).toBe(false);
+    expect((await o.get('/admin/overview')).status).toBe(403);
+
+    // A super-admin is a flagged user; they use the normal API plus /admin.
+    const admin = await registerOrg('Platform');
+    const me = (await admin.get('/auth/me')).body.user;
+    expect(me.isSuperAdmin).toBe(false);
+    await prisma.user.update({ where: { id: me.id }, data: { isSuperAdmin: true } });
+    expect((await admin.get('/auth/me')).body.user.isSuperAdmin).toBe(true);
+    const overview = (await admin.get('/admin/overview')).body;
+    expect(overview.organisations).toBeGreaterThan(1);
+    const plans = (await admin.get('/admin/plans')).body;
+    expect(plans.map((p: any) => p.key)).toEqual(['free', 'growth', 'enterprise']);
+    const tiny = await admin.post('/admin/plans', { key: 'tiny', name: 'Tiny', limits: { users: 1, leads: 2, automations: 0, storageMb: 1, webhooks: 0 } });
+    expect(tiny.status).toBe(201);
+    expect((await admin.post('/admin/plans', { key: 'tiny', name: 'Dup', limits: tiny.body.limits })).status).toBe(400);
+
+    const listed = (await admin.get('/admin/organisations?q=Planned')).body;
+    expect(listed.total).toBe(1);
+    const orgId = listed.items[0].id;
+    expect(listed.items[0]).toMatchObject({ plan: 'Free', members: 1, owner: { email: o.email } });
+    await admin.patch(`/admin/organisations/${orgId}`, { planId: tiny.body.id });
+    expect((await o.get('/organisation/plan')).body.plan.key).toBe('tiny');
+
+    // Limits bite: two leads fit, the third does not (create, import and the public API alike); users and automations too.
+    expect((await o.post('/leads', { name: 'One' })).status).toBe(201);
+    expect((await o.post('/leads', { name: 'Two' })).status).toBe(201);
+    const third = await o.post('/leads', { name: 'Three' });
+    expect(third.status).toBe(403);
+    expect(third.body.code).toBe('PLAN_LIMIT');
+    expect((await o.post('/leads/import', { rows: [{ name: 'Four', phone: '9000000004' }] })).status).toBe(403);
+    const roles = (await o.get('/roles')).body as any[];
+    expect((await o.post('/invitations', { email: 'more@example.com', roleId: roles[1].id })).body.code).toBe('PLAN_LIMIT');
+    expect((await o.post('/automations', { name: 'X', trigger: 'lead.created', steps: [{ type: 'archive' }] })).body.code).toBe('PLAN_LIMIT');
+    expect((await o.post('/webhook-endpoints', { name: 'X', url: 'https://example.com/h', events: ['*'] })).body.code).toBe('PLAN_LIMIT');
+    // Back on a roomier plan everything works again; suspension locks everyone out at once.
+    const growth = plans.find((p: any) => p.key === 'growth').id;
+    await admin.patch(`/admin/organisations/${orgId}`, { planId: growth });
+    expect((await o.post('/leads', { name: 'Three' })).status).toBe(201);
+    await admin.patch(`/admin/organisations/${orgId}`, { status: 'SUSPENDED' });
+    expect((await o.get('/leads')).status).toBe(401);
+    expect((await admin.get(`/admin/organisations/${orgId}`)).body.status).toBe('SUSPENDED');
+    await admin.patch(`/admin/organisations/${orgId}`, { status: 'ACTIVE' });
+    expect((await o.get('/leads')).status).toBe(200);
+    expect((await admin.get('/admin/organisations/nope')).status).toBe(404);
+    // Plans can be retired; the default plan is what new workspaces receive.
+    await admin.patch(`/admin/plans/${tiny.body.id}`, { active: false });
+    expect((await o.get('/organisation/plan')).body.available.map((p: any) => p.key)).not.toContain('tiny');
+  });
+});
+
 describe('audit log', () => {
   it('records administrative actions with the actor', async () => {
     const o = await registerOrg('Audit');

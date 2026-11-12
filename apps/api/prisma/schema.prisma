@@ -91,6 +91,7 @@ model Organisation {
   calls         Call[]
   dispositions  CallDisposition[]
   automations   Automation[]
+  subscription  Subscription?
   outboxEvents  OutboxEvent[]
   webhooks      WebhookEndpoint[]
   integrations  Integration[]
@@ -449,6 +450,48 @@ model LeadList {
   members      LeadListMember[]
 
   @@unique([organisationId, name])
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+  SUSPENDED
+}
+
+/// A plan with its limits. Managed by super-admins; new workspaces land on the default plan.
+model Plan {
+  id           String   @id @default(cuid())
+  key          String   @unique
+  name         String
+  priceMonthly Decimal  @default(0) @db.Decimal(12, 2)
+  currency     String   @default("INR")
+  limits       Json
+  isDefault    Boolean  @default(false)
+  active       Boolean  @default(true)
+  position     Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  subscriptions Subscription[]
+}
+
+/// One per organisation. Billing-provider fields are filled when a gateway is connected.
+model Subscription {
+  id               String             @id @default(cuid())
+  organisationId   String             @unique
+  planId           String
+  status           SubscriptionStatus @default(ACTIVE)
+  trialEndsAt      DateTime?
+  currentPeriodEnd DateTime?
+  provider         String?
+  providerRef      String?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  plan         Plan         @relation(fields: [planId], references: [id])
 }
 
 enum CallDirection {

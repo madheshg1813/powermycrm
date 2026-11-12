@@ -4,6 +4,7 @@ import { createHmac } from 'crypto';
 import { z } from 'zod';
 import { Context, Ctx, Perm, PrismaService, audit, pageSchema, parse, randomToken } from '../common/core';
 import { QueueService, decrypt, encrypt } from '../common/queue';
+import { PlanService } from './admin';
 
 /** Event types the outbox can carry. Webhook endpoints subscribe to any of these, or to `*`. */
 export const EVENT_TYPES = [
@@ -116,6 +117,7 @@ export class WebhooksController implements OnModuleInit {
     private readonly prisma: PrismaService,
     private readonly queue: QueueService,
     private readonly outbox: OutboxService,
+    private readonly plans: PlanService,
   ) {}
 
   onModuleInit() {
@@ -191,7 +193,7 @@ export class WebhooksController implements OnModuleInit {
   @Perm('settings.manage') @Post('webhook-endpoints')
   async create(@Context() ctx: Ctx, @Body() body: unknown) {
     const d = parse(endpointSchema, body);
-    if ((await this.prisma.webhookEndpoint.count({ where: { organisationId: ctx.orgId } })) >= 20) throw new BadRequestException('A workspace can have up to 20 webhook endpoints');
+    await this.plans.check(ctx.orgId, 'webhooks');
     const secret = `whsec_${randomToken()}`;
     const ep = await this.prisma.webhookEndpoint.create({ data: { organisationId: ctx.orgId, name: d.name, url: d.url, events: [...new Set(d.events)], active: d.active, secret: encrypt(secret), createdById: ctx.userId } });
     await audit(this.prisma, ctx, 'webhook.created', 'webhook_endpoint', ep.id, { name: d.name, url: d.url });

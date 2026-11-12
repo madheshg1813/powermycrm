@@ -4,6 +4,7 @@ import { Response } from 'express';
 import { randomBytes } from 'crypto';
 import { Context, Ctx, Perm, PrismaService, audit } from '../common/core';
 import { StorageService } from '../common/storage';
+import { PlanService } from './admin';
 import { LeadsService } from './leads';
 
 /** What multer hands us for a single memory-stored file. */
@@ -29,6 +30,7 @@ export class AttachmentsController {
     private readonly prisma: PrismaService,
     private readonly leads: LeadsService,
     private readonly storage: StorageService,
+    private readonly plans: PlanService,
   ) {}
 
   private async visibleLead(ctx: Ctx, leadId: string) {
@@ -61,6 +63,7 @@ export class AttachmentsController {
     const mimeType = ALLOWED[ext];
     if (!mimeType) throw new BadRequestException(`This file type is not allowed. Allowed: ${ALLOWED_EXTENSIONS.join(', ')}`);
     if (!file.size) throw new BadRequestException('The file is empty');
+    await this.plans.check(ctx.orgId, 'storageMb', Math.ceil(file.size / 1024 / 1024));
     const count = await this.prisma.leadAttachment.count({ where: { leadId } });
     if (count >= 50) throw new BadRequestException('A lead can have up to 50 files');
     const storageKey = `${ctx.orgId}/${leadId}/${Date.now().toString(36)}-${randomBytes(6).toString('hex')}.${ext}`;

@@ -22,6 +22,14 @@ import type { Request, Response } from 'express';
 import * as jwt from 'jsonwebtoken';
 import { z } from 'zod';
 import { Context, Ctx, PrismaService, Public, jwtSecret, parse, randomToken, sha256 } from '../common/core';
+/** Emails listed in SUPER_ADMIN_EMAILS (comma-separated) are platform administrators; the flag follows the list on every sign-in. */
+export async function syncSuperAdmin(prisma: PrismaService, userId: string, email: string) {
+  const list = (process.env.SUPER_ADMIN_EMAILS ?? '').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean);
+  const should = list.includes(email.toLowerCase());
+  await prisma.user.updateMany({ where: { id: userId, isSuperAdmin: { not: should } }, data: { isSuperAdmin: should } });
+}
+
+import { PlanService } from './admin';
 import { DEFAULT_DISPOSITIONS } from './calls';
 import { EmailService, layout } from './email';
 import { DEFAULT_LABELS, DEFAULT_SOURCES, DEFAULT_STAGES, SYSTEM_ROLES } from '../common/permissions';
@@ -69,7 +77,7 @@ export async function seedOrganisation(tx: Tx, organisationId: string): Promise<
 @Injectable()
 export class AuthService {
   private readonly log = new Logger('Auth');
-  constructor(private readonly prisma: PrismaService, private readonly email: EmailService) {}
+  constructor(private readonly prisma: PrismaService, private readonly email: EmailService, private readonly plans: PlanService) {}
 
   private async issueSession(userId: string, organisationId: string, req: Request, res: Response) {
     const refresh = randomToken();
@@ -125,6 +133,8 @@ export class AuthService {
       return { user, org };
     });
     await this.sendVerification(user.id, org.id);
+    await syncSuperAdmin(this.prisma, user.id, user.email);
+    await this.plans.forOrganisation(org.id);
     return this.issueSession(user.id, org.id, req, res);
   }
 
@@ -163,6 +173,7 @@ export class AuthService {
       data: { email: data.email, userId: user?.id, success: ok, ip: req.ip, userAgent: String(req.headers['user-agent'] ?? '').slice(0, 300) },
     });
     if (!user || !ok) throw new UnauthorizedException('Incorrect email or password');
+    await syncSuperAdmin(this.prisma, user.id, user.email);
 
     const memberships = await this.prisma.membership.findMany({
       where: { userId: user.id, status: 'ACTIVE', organisation: { status: 'ACTIVE' } },
@@ -230,7 +241,7 @@ export class AuthService {
     ]);
     const o = membership.organisation;
     return {
-      user: { id: user.id, name: user.name, email: user.email, phone: user.phone, emailVerified: !!user.emailVerifiedAt },
+      user: { id: user.id, name: user.name, email: user.email, phone: user.phone, emailVerified: !!user.emailVerifiedAt, isSuperAdmin: user.isSuperAdmin },
       organisation: { id: o.id, name: o.name, slug: o.slug, timezone: o.timezone, currency: o.currency, dateFormat: o.dateFormat, logoUrl: o.logoUrl },
       role: { id: membership.role.id, name: membership.role.name, scope: membership.role.scope, systemKey: membership.role.systemKey },
       permissions: membership.role.permissions,

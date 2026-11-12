@@ -14,6 +14,8 @@ The organisation is always taken from the token, never from the request.
 | GET `/auth/me`, POST `/auth/profile`, `/auth/switch`, `/auth/change-password` | signed in | Profile and workspace switching |
 | POST `/auth/verify-email` (public), POST `/auth/resend-verification` | public / signed in | Email verification |
 | GET `/emails` | `settings.manage` | Outgoing email log |
+| GET `/organisation/plan` | `settings.manage` | Current plan, usage and available plans |
+| GET `/admin/overview`, `/admin/organisations[/:id]`, PATCH `/admin/organisations/:id`, GET/POST `/admin/plans`, PATCH `/admin/plans/:id` | super-admin | Platform administration |
 | GET/POST `/calls`, PATCH/DELETE `/calls/:id`; GET/POST `/call-dispositions`, PATCH/DELETE `/call-dispositions/:id` | `leads.view` / `pipeline.manage` | Call log with outcomes; optional `followUp` on create |
 | GET `/automations/options`; GET/POST `/automations`; PATCH/DELETE `/automations/:id`; POST `/automations/:id/test` (`leadId`); GET `/automations/:id/runs` | `settings.manage` | Workflow automations and run history |
 | GET `/integrations/email-status`; POST `/integrations/:id/test`, `/integrations/:id/send-test` | `settings.manage` | Email connection status, connection test (any credential-based provider), test email (SMTP) |

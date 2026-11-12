@@ -17,6 +17,7 @@ import {
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { Context, Ctx, Perm, PrismaService, audit, normalizePhone, pageSchema, parse, requirePerm } from '../common/core';
+import { PlanService } from './admin';
 import { OutboxService } from './webhooks';
 
 export type IngestInput = { name?: string; phone?: string; email?: string; company?: string; city?: string; message?: string; sourceName?: string | null; customFields?: Record<string, unknown>; externalId?: string | null };
@@ -197,6 +198,7 @@ export class LeadsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly outbox: OutboxService,
+    private readonly plans: PlanService,
   ) {}
 
   /** Owners whose leads the caller may see: null for everyone (ALL scope), the team's user ids, or just their own. */
@@ -446,6 +448,7 @@ export class LeadsService {
 
   async create(ctx: Ctx, body: unknown) {
     const { labelIds, allowDuplicate, customFields, ...d } = parse(createSchema, body);
+    await this.plans.check(ctx.orgId, 'leads');
     // "auto" hands the lead to the assignment rules; it stays unassigned when no rule applies.
     const auto = d.ownerId === 'auto' ? await this.distributor(ctx.orgId) : null;
     if (!auto && d.ownerId !== undefined && d.ownerId !== ctx.userId) requirePerm(ctx, 'leads.assign');
@@ -784,6 +787,7 @@ export class LeadsService {
       toCreate.push(c);
     }
 
+    if (toCreate.length) await this.plans.check(ctx.orgId, 'leads', toCreate.length);
     await this.prisma.$transaction(async (tx) => {
       if (toCreate.length) {
         const rowsCreated = await tx.lead.createManyAndReturn({
@@ -901,6 +905,7 @@ export class LeadsService {
       return { leadId: existing.id, outcome: update ? 'updated' : 'skipped' };
     }
 
+    await this.plans.check(organisationId, 'leads');
     const stage = await this.defaultStage(organisationId);
     const auto = opts.ownerId === 'auto' ? await this.distributor(organisationId) : null;
     const ownerId = auto ? auto.next(sourceId ?? null) : opts.ownerId === 'auto' ? null : opts.ownerId;

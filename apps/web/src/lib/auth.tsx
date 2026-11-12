@@ -4,7 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useState } from 'rea
 import { api, refreshSession, setAccessToken } from './api';
 
 export type Me = {
-  user: { id: string; name: string; email: string; phone: string | null; emailVerified: boolean };
+  user: { id: string; name: string; email: string; phone: string | null; emailVerified: boolean; isSuperAdmin: boolean };
   organisation: { id: string; name: string; slug: string; timezone: string; currency: string; dateFormat: string; logoUrl: string | null };
   role: { id: string; name: string; scope: 'OWN' | 'TEAM' | 'ALL'; systemKey: string | null };
   permissions: string[];

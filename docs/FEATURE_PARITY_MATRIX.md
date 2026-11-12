@@ -45,12 +45,12 @@ the browser, **None** = untested. Rows marked (ext) go beyond what TeleCRM docum
 | Leaderboard | /features 3.3 | Agent leaderboard: created, won, lost, conversion, won value, open, follow-ups completed and on time, overdue, notes; ranked by won then value. Lead-source and follow-up reports alongside | Testing | API + Manual |
 | Funnel by stage | /whatsapp-crm | Dashboard pipeline chart | Completed | API + Manual |
 | Custom report | /features 3.6 | — | Not Started | None |
-| Mobile app | /call-center-crm | Responsive web layouts written, not verified on a phone | Frontend In Progress | None |
+| Mobile app | /call-center-crm | Installable PWA (manifest, icons, offline page, service worker) over responsive layouts; not yet verified on a physical phone | Testing | Manual (desktop) |
 | Multi-tenant workspaces (ext) | — | Organisation isolation in every query | Completed | API |
 | Auth, sessions, password reset (ext) | — | JWT + rotating refresh cookie, Argon2id, device list, password reset and email verification by email | Completed | API + Manual (register) |
 | Invitations (ext) | — | Emailed through the workspace SMTP connection (link shown to the admin as a fallback), 7-day expiry | Testing | API (real SMTP server in tests); screen Manual |
 | Email (SMTP) connection (ext) | — | Per-workspace SMTP credentials, connection test, test email, send log | Testing | API + Manual |
 | Audit log (ext) | — | Recorded and served by API; no screen | Backend In Progress | API |
 | MFA (ext) | — | — | Not Started | None |
-| Super admin, plans, billing (ext) | /pricing | — | Not Started | None |
+| Super admin, plans, billing (ext) | /pricing | Platform admin area, plan catalogue, limits enforced per workspace, suspension. Self-service billing needs a payment gateway | Testing (billing Integration Pending) | API + Manual |
 | AI features (ext) | — | — | Not Started | None |

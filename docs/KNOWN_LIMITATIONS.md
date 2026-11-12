@@ -24,7 +24,8 @@
 - No multi-factor authentication or password-policy settings. Verifying the email is encouraged by a banner but not enforced.
 - The audit log has an API endpoint but no screen.
 - The organisation's date-format and timezone settings are stored but not yet applied to displayed dates.
-- No super-admin panel, subscriptions or usage limits.
+- Plans are assigned by platform admins; there is no self-service upgrade or payment collection until a billing provider is connected. Limits are checked when something is created, not retroactively.
+- The PWA service worker only registers in production builds (`next build && next start`); the dev server runs without it.
 
 ## Security hardening still to do
 

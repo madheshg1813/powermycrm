@@ -7,6 +7,7 @@ import helmet from 'helmet';
 import { AuthGuard, PrismaService, Public } from './common/core';
 import { QueueService } from './common/queue';
 import { StorageService } from './common/storage';
+import { AdminController, PlanController, PlanService } from './modules/admin';
 import { AttachmentsController } from './modules/attachments';
 import { AutomationsController, AutomationsService } from './modules/automations';
 import { CallsController } from './modules/calls';
@@ -42,9 +43,10 @@ class HealthController {
       skipIf: () => process.env.NODE_ENV === 'test',
     }),
   ],
-  controllers: [HealthController, AuthController, OrgController, CatalogController, CustomiseController, LeadsController, ListsController, TasksController, DashboardController, ReportsController, OpportunitiesController, PaymentsController, WebhooksController, IntegrationsController, ApiKeysController, EmailController, AttachmentsController, CallsController, AutomationsController],
+  controllers: [HealthController, AuthController, OrgController, CatalogController, CustomiseController, LeadsController, ListsController, TasksController, DashboardController, ReportsController, OpportunitiesController, PaymentsController, WebhooksController, IntegrationsController, ApiKeysController, EmailController, AttachmentsController, CallsController, AutomationsController, PlanController, AdminController],
   providers: [
     PrismaService,
+    PlanService,
     QueueService,
     StorageService,
     OutboxService,

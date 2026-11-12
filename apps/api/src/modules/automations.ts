@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { Context, Ctx, Perm, PrismaService, audit, pageSchema, parse } from '../common/core';
 import { ALL_PERMISSION_KEYS } from '../common/permissions';
 import { QueueService } from '../common/queue';
+import { PlanService } from './admin';
 import { EmailService, layout } from './email';
 import { LeadsService } from './leads';
 
@@ -278,6 +279,7 @@ export class AutomationsController {
     private readonly prisma: PrismaService,
     private readonly service: AutomationsService,
     private readonly leads: LeadsService,
+    private readonly plans: PlanService,
   ) {}
 
   private async find(ctx: Ctx, id: string) {
@@ -321,7 +323,7 @@ export class AutomationsController {
   async create(@Context() ctx: Ctx, @Body() body: unknown) {
     const d = parse(automationSchema, body);
     await this.checkRefs(ctx, d);
-    if ((await this.prisma.automation.count({ where: { organisationId: ctx.orgId } })) >= 100) throw new BadRequestException('A workspace can have up to 100 automations');
+    await this.plans.check(ctx.orgId, 'automations');
     const a = await this.prisma.automation.create({ data: { organisationId: ctx.orgId, name: d.name, description: d.description ?? null, trigger: d.trigger, conditions: d.conditions as Prisma.InputJsonValue, steps: d.steps as Prisma.InputJsonValue, active: d.active, createdById: ctx.userId } });
     await audit(this.prisma, ctx, 'automation.created', 'automation', a.id, { name: d.name, trigger: d.trigger });
     return a;
