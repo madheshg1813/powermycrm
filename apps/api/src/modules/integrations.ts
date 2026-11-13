@@ -1,9 +1,11 @@
-import { BadRequestException, Body, Controller, Delete, Get, Headers, HttpCode, Logger, NotFoundException, OnModuleInit, Param, Patch, Post, Query, Req, Res, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Headers, HttpCode, Logger, NotFoundException, OnApplicationBootstrap, OnModuleInit, Param, Patch, Post, Query, Req, Res, UnauthorizedException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { Request, Response } from 'express';
 import { z } from 'zod';
 import { Context, Ctx, Perm, PrismaService, Public, audit, normalizePhone, pageSchema, parse, randomToken, sha256 } from '../common/core';
 import { mapExotelStatus } from './providers/exotel';
+import { fetchMetaLead, indiamartCredentials, metaLeadsCredentials, normalizeJustdial, pullIndiamart } from './providers/leadsources';
+import { verifyMetaSignature } from './providers/whatsapp';
 import { razorpayCredentials, verifyRazorpayWebhook } from './providers/razorpay';
 import { OutboxService } from './webhooks';
 import { ConflictException } from '@nestjs/common';
@@ -18,7 +20,7 @@ export type { CredentialField } from './providers/index';
 
 /** CRM fields a website form can fill. `cf_<key>` entries are added per workspace from its custom fields. */
 export const MAPPABLE_FIELDS = ['name', 'phone', 'email', 'company', 'city', 'message', 'source'] as const;
-const DEFAULT_MAPPING: Record<string, string> = { name: 'name', phone: 'phone', email: 'email', company: 'company', city: 'city', message: 'message' };
+const DEFAULT_MAPPING: Record<string, string> = { name: 'name', phone: 'phone', email: 'email', company: 'company', city: 'city', message: 'message', source: 'source' };
 
 const settingsSchema = z.object({
   sourceId: z.string().nullable().default(null),
@@ -60,7 +62,7 @@ export function applyMapping(payload: Record<string, unknown>, mapping: Record<s
 }
 
 @Controller()
-export class IntegrationsController implements OnModuleInit {
+export class IntegrationsController implements OnModuleInit, OnApplicationBootstrap {
   private readonly log = new Logger('Integrations');
   constructor(
     private readonly prisma: PrismaService,
@@ -72,6 +74,106 @@ export class IntegrationsController implements OnModuleInit {
 
   onModuleInit() {
     this.queue.work<{ eventId: string }>('integration.inbound', ({ eventId }) => this.processInbound(eventId), { retryLimit: 5, retryDelay: 60 });
+    this.queue.work<object>('indiamart.poll', async () => { await this.pollAllIndiamart(); }, { retryLimit: 0 });
+  }
+
+  async onApplicationBootstrap() {
+    // IndiaMART allows one pull every five minutes per key.
+    await this.queue.schedule('indiamart.poll', '*/5 * * * *');
+  }
+
+  /** Stores an inbound lead once (de-duplicated on externalId) and queues it for processing. Returns null for a repeat. */
+  private async recordInbound(integration: { id: string; organisationId: string }, externalId: string | null, type: string, payload: Record<string, unknown>) {
+    try {
+      const ev = await this.prisma.integrationEvent.create({ data: { organisationId: integration.organisationId, integrationId: integration.id, direction: 'IN', externalId, type, payload: payload as Prisma.InputJsonObject, status: 'PENDING' } });
+      await this.queue.send('integration.inbound', { eventId: ev.id }, { singletonKey: ev.id });
+      return ev;
+    } catch (e) {
+      if ((e as Prisma.PrismaClientKnownRequestError).code === 'P2002') return null;
+      throw e;
+    }
+  }
+
+  /** Pulls new IndiaMART enquiries for one integration, from where the previous pull stopped (at most 7 days back). */
+  async pullIndiamart(integrationId: string) {
+    const i = await this.prisma.integration.findUnique({ where: { id: integrationId } });
+    if (!i || i.provider !== 'indiamart' || i.status !== 'CONNECTED' || !i.credentials) return { pulled: 0, created: 0 };
+    const creds = indiamartCredentials.parse(JSON.parse(decrypt(i.credentials)));
+    const settings = (i.settings ?? {}) as Record<string, unknown>;
+    const now = new Date();
+    const last = typeof settings.lastPulledAt === 'string' ? new Date(settings.lastPulledAt) : new Date(now.getTime() - 24 * 3600e3);
+    const from = new Date(Math.max(last.getTime() - 60_000, now.getTime() - 7 * 864e5));
+    try {
+      const r = await pullIndiamart(creds.crmKey, from, now);
+      if (r.code === 429) return { pulled: 0, created: 0, throttled: true };
+      let created = 0;
+      for (const l of r.leads) if (await this.recordInbound(i, l.externalId, 'enquiry', l.lead)) created++;
+      await this.prisma.integration.update({ where: { id: i.id }, data: { settings: { ...settings, lastPulledAt: now.toISOString() } as Prisma.InputJsonObject, lastError: null, ...(r.leads.length ? { lastEventAt: now } : {}) } });
+      return { pulled: r.leads.length, created };
+    } catch (e) {
+      await this.prisma.integration.update({ where: { id: i.id }, data: { lastError: (e as Error).message.slice(0, 300) } });
+      throw new BadRequestException((e as Error).message);
+    }
+  }
+
+  async pollAllIndiamart() {
+    const rows = await this.prisma.integration.findMany({ where: { provider: 'indiamart', status: 'CONNECTED' }, select: { id: true } });
+    for (const r of rows) await this.pullIndiamart(r.id).catch((e) => this.log.warn(`IndiaMART pull ${r.id} failed: ${(e as Error).message}`));
+  }
+
+  /** Pull now, from Settings. */
+  @Perm('settings.manage') @Post('integrations/:id/pull') @HttpCode(200)
+  async pullNow(@Context() ctx: Ctx, @Param('id') id: string) {
+    const i = await this.find(ctx, id);
+    if (i.provider !== 'indiamart') throw new BadRequestException('Only IndiaMART is pulled; other sources push leads to their webhook');
+    if (i.status !== 'CONNECTED') throw new BadRequestException('Connect IndiaMART first');
+    return this.pullIndiamart(id);
+  }
+
+  /** Justdial pushes each enquiry (GET query or POST body) to this URL with the integration token. */
+  @Public() @Post('hooks/justdial/:id') @HttpCode(200)
+  async justdialPost(@Param('id') id: string, @Body() body: Record<string, unknown>, @Query() query: Record<string, unknown>) {
+    return this.justdialHook(id, { ...(query ?? {}), ...(body ?? {}) });
+  }
+  @Public() @Get('hooks/justdial/:id')
+  async justdialGet(@Param('id') id: string, @Query() query: Record<string, unknown>) {
+    return this.justdialHook(id, query ?? {});
+  }
+  private async justdialHook(id: string, p: Record<string, unknown>) {
+    const i = await this.prisma.integration.findFirst({ where: { id, provider: 'justdial' } });
+    if (!i || i.status !== 'CONNECTED' || !i.credentials) throw new NotFoundException('This endpoint is not active');
+    const { token: expected } = JSON.parse(decrypt(i.credentials)) as { token: string };
+    if (typeof p.token !== 'string' || !safeEqual(p.token, expected)) throw new UnauthorizedException('Invalid token');
+    const { token: _t, ...fields } = p;
+    const n = normalizeJustdial(fields);
+    const ev = await this.recordInbound(i, n.externalId, 'enquiry', n.lead);
+    // Justdial expects a plain RECEIVED acknowledgement.
+    return ev ? 'RECEIVED' : 'RECEIVED (duplicate)';
+  }
+
+  /** Meta lead ads: verification handshake, then signed leadgen notifications whose details are fetched by the worker. */
+  @Public() @Get('hooks/meta_leads/:id')
+  async metaVerify(@Param('id') id: string, @Query() q: Record<string, string>, @Res() res: Response) {
+    const i = await this.prisma.integration.findFirst({ where: { id, provider: 'meta_leads' } });
+    if (!i?.credentials) throw new NotFoundException('Unknown integration');
+    const creds = metaLeadsCredentials.parse(JSON.parse(decrypt(i.credentials)));
+    if (q['hub.mode'] === 'subscribe' && q['hub.verify_token'] && safeEqual(q['hub.verify_token'], creds.verifyToken)) return res.status(200).type('text/plain').send(q['hub.challenge'] ?? '');
+    throw new UnauthorizedException('Verify token does not match');
+  }
+
+  @Public() @Post('hooks/meta_leads/:id') @HttpCode(200)
+  async metaLeadgen(@Param('id') id: string, @Body() body: any, @Headers('x-hub-signature-256') sig: string | undefined, @Req() req: Request & { rawBody?: Buffer }) {
+    const i = await this.prisma.integration.findFirst({ where: { id, provider: 'meta_leads' } });
+    if (!i?.credentials || i.status !== 'CONNECTED') throw new NotFoundException('Unknown integration');
+    const creds = metaLeadsCredentials.parse(JSON.parse(decrypt(i.credentials)));
+    if (!req.rawBody || !verifyMetaSignature(req.rawBody, sig, creds.appSecret)) throw new UnauthorizedException('Invalid signature');
+    let queued = 0;
+    for (const entry of body?.entry ?? []) for (const ch of entry.changes ?? []) {
+      if (ch.field !== 'leadgen' || !ch.value?.leadgen_id) continue;
+      const v = ch.value;
+      if (await this.recordInbound(i, `fb:${v.leadgen_id}`, 'leadgen', { leadgenId: String(v.leadgen_id), formId: v.form_id ? String(v.form_id) : undefined, adId: v.ad_id ? String(v.ad_id) : undefined, pageId: v.page_id ? String(v.page_id) : undefined })) queued++;
+    }
+    return { ok: true, queued };
   }
 
   // ---- Worker ------------------------------------------------------------------------
@@ -82,7 +184,14 @@ export class IntegrationsController implements OnModuleInit {
     if (!ev || ev.status !== 'PENDING') return;
     const settings = settingsSchema.parse(ev.integration.settings ?? {});
     try {
-      const mapped = applyMapping(ev.payload as Record<string, unknown>, (ev.integration.fieldMapping ?? {}) as Record<string, string>);
+      let payload = ev.payload as Record<string, unknown>;
+      if (ev.integration.provider === 'meta_leads' && payload.leadgenId && !payload.fetched) {
+        if (!ev.integration.credentials) throw new BadRequestException('Meta credentials are missing');
+        const lead = await fetchMetaLead(metaLeadsCredentials.parse(JSON.parse(decrypt(ev.integration.credentials))), String(payload.leadgenId));
+        payload = { ...payload, ...lead, fetched: true };
+        await this.prisma.integrationEvent.update({ where: { id: eventId }, data: { payload: payload as Prisma.InputJsonObject } });
+      }
+      const mapped = applyMapping(payload, (ev.integration.fieldMapping ?? {}) as Record<string, string>);
       const opts: IngestOptions = { ownerId: settings.ownerId, duplicateStrategy: settings.duplicateStrategy, sourceId: settings.sourceId, via: ev.integration.provider, integrationId: ev.integrationId };
       const r = await this.leads.ingest(ev.organisationId, mapped, opts);
       await this.prisma.$transaction([
@@ -253,14 +362,14 @@ export class IntegrationsController implements OnModuleInit {
     const def = providerByKey(i.provider);
     const creds = i.credentials ? (JSON.parse(decrypt(i.credentials)) as Record<string, unknown>) : null;
     // Secrets never leave the server. A form token is embedded in public HTML anyway, so forms get theirs back.
-    const token = i.provider === 'website_form' && creds ? String(creds.token) : null;
+    const token = def?.auth === 'webhook_only' && creds ? String(creds.token) : null;
     const credentials = def?.auth === 'credentials' && creds
       ? Object.fromEntries(Object.entries(creds).filter(([k]) => !def.secretKeys.includes(k)).concat(def.secretKeys.map((k) => [`has_${k}`, !!creds[k]])))
       : null;
     return {
       id: i.id, provider: i.provider, name: i.name, status: i.status, settings: i.settings, fieldMapping: i.fieldMapping, lastError: i.lastError, lastEventAt: i.lastEventAt, createdAt: i.createdAt,
       token, credentials,
-      endpointUrl: i.provider === 'website_form' ? `${publicUrl()}/api/v1/hooks/website_form/${i.id}` : def?.webhook ? `${publicUrl()}/api/v1/hooks/${def.webhook.path}/${i.id}` : null,
+      endpointUrl: i.provider === 'website_form' ? `${publicUrl()}/api/v1/hooks/website_form/${i.id}` : def?.webhook ? `${publicUrl()}/api/v1/hooks/${def.webhook.path}/${i.id}${def.auth === 'webhook_only' && token ? `?token=${token}` : ''}` : null,
     };
   }
 
@@ -332,12 +441,13 @@ export class IntegrationsController implements OnModuleInit {
     if (def.auth === 'credentials' && (await this.prisma.integration.findFirst({ where: { organisationId: ctx.orgId, provider: d.provider } }))) throw new ConflictException(`This workspace already has a ${def.name} connection; edit it instead`);
     // A website form has nothing external to test against: its endpoint exists as soon as it is saved.
     // Credential-based providers start as "awaiting credentials" and become connected only after a successful test.
-    const stored = d.provider === 'website_form' ? { token: `pmf_${randomToken()}` } : cleanCredentials(d.provider, d.credentials);
+    const pushOnly = def.auth === 'webhook_only';
+    const stored = pushOnly ? { token: `pmf_${randomToken()}` } : cleanCredentials(d.provider, d.credentials);
     const i = await this.prisma.integration.create({
-      data: { organisationId: ctx.orgId, provider: d.provider, name: d.name, status: d.provider === 'website_form' ? 'CONNECTED' : 'AWAITING_CREDENTIALS', credentials: encrypt(JSON.stringify(stored)), settings: d.settings as Prisma.InputJsonObject, fieldMapping: d.fieldMapping as Prisma.InputJsonObject, createdById: ctx.userId },
+      data: { organisationId: ctx.orgId, provider: d.provider, name: d.name, status: pushOnly ? 'CONNECTED' : 'AWAITING_CREDENTIALS', credentials: encrypt(JSON.stringify(stored)), settings: d.settings as Prisma.InputJsonObject, fieldMapping: d.fieldMapping as Prisma.InputJsonObject, createdById: ctx.userId },
     });
     await audit(this.prisma, ctx, 'integration.created', 'integration', i.id, { provider: d.provider, name: d.name });
-    if (d.provider === 'website_form') return this.present(i);
+    if (pushOnly) return this.present(i);
     const t = await this.testConnection(i);
     return { ...this.present(t.row), summary: t.summary };
   }
@@ -348,15 +458,15 @@ export class IntegrationsController implements OnModuleInit {
     const existing = await this.find(ctx, id);
     if (d.settings) await this.checkSettings(ctx, d.settings);
     let credentials: string | undefined;
-    if (d.credentials && existing.provider !== 'website_form') {
+    if (d.credentials && providerByKey(existing.provider)?.auth === 'credentials') {
       const current = existing.credentials ? (JSON.parse(decrypt(existing.credentials)) as Record<string, unknown>) : undefined;
       credentials = encrypt(JSON.stringify(cleanCredentials(existing.provider, d.credentials, current)));
     }
     // Re-enabling a credential-based provider, or changing its credentials, re-runs the connection test.
-    if (d.status === 'CONNECTED' && existing.provider !== 'website_form') d.status = undefined;
+    if (d.status === 'CONNECTED' && providerByKey(existing.provider)?.auth === 'credentials') d.status = undefined;
     const i = await this.prisma.integration.update({ where: { id }, data: { name: d.name, settings: d.settings as Prisma.InputJsonObject | undefined, fieldMapping: d.fieldMapping as Prisma.InputJsonObject | undefined, credentials, status: d.status, lastError: d.status === 'CONNECTED' ? null : undefined } });
     await audit(this.prisma, ctx, 'integration.updated', 'integration', id, { status: d.status, name: d.name, credentialsChanged: !!credentials });
-    const retest = existing.provider !== 'website_form' && (!!credentials || (body as { status?: string })?.status === 'CONNECTED');
+    const retest = providerByKey(existing.provider)?.auth === 'credentials' && (!!credentials || (body as { status?: string })?.status === 'CONNECTED');
     if (!retest) return this.present(i);
     const t = await this.testConnection(i);
     return { ...this.present(t.row), summary: t.summary };

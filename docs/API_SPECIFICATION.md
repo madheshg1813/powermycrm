@@ -58,6 +58,8 @@ The organisation is always taken from the token, never from the request.
 | POST `/hooks/razorpay/:integrationId`, POST `/hooks/exotel/:integrationId`, GET/POST `/hooks/whatsapp/:integrationId` | public (signature / verify token / unguessable id) | Provider callbacks |
 | GET/POST `/conversations`, GET `/conversations/:id`, POST `/conversations/:id/messages`, POST `/conversations/:id/read` | `leads.view` | Inbox; send `text` or `templateName` + `language` + `params`; 400 `WINDOW_CLOSED` for WhatsApp free text after 24 h |
 | GET `/message-templates`, POST `/message-templates/sync` | `leads.view` / `settings.manage` | WhatsApp templates |
+| POST `/integrations/:id/pull` | `settings.manage` | IndiaMART pull now |
+| GET/POST `/hooks/justdial/:integrationId?token=…`, GET/POST `/hooks/meta_leads/:integrationId` | public (token / signature) | Lead-source pushes |
 | GET/POST `/api-keys`, DELETE `/api-keys/:id` | `settings.manage` | Bearer keys for the public API; key returned once |
 | GET `/public/me`, POST `/public/leads` | public, `Authorization: Bearer pmc_live_…` | Lead capture: `name, phone, email, company, city, source, message, customFields, externalId, duplicateStrategy, ownerId` → `{ id, outcome }` |
 

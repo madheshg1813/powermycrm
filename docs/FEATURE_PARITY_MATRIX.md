@@ -10,7 +10,7 @@ the browser, **None** = untested. Rows marked (ext) go beyond what TeleCRM docum
 | Excel upload with field mapping | /features 1.1 | CSV import, column mapping, duplicate strategy, row errors. `.xlsx` not yet | Frontend In Progress | API; screen None |
 | Website forms (ext) | — | Form endpoint per integration with token, field mapping, source, duplicate strategy, auto-assignment, honeypot, thank-you redirect, event log with retry | Testing | API + Manual |
 | Outbound webhooks (ext) | — | Signed JSON per event type, retries with backoff, delivery log, test events, secret rotation | Testing | API + Manual |
-| Facebook lead capture | /features 1.2 | Framework ready; needs a reviewed Meta app | Blocked | None |
+| Facebook lead capture | /features 1.2 | Meta lead ads: verified webhook, lead details fetched from the Graph API, every form answer kept on the lead | Integration Pending (needs a reviewed Meta app) | API (stub server) |
 | Custom API lead capture | /features 1.3 | Bearer API keys (Settings → Integrations), `POST /public/leads` with de-duplication strategy and rule-based assignment | Testing | API + Manual |
 | Automatic lead distribution | /features 1.4 | Round-robin rules per source or all sources, used by "Auto-assign by rule" on create, import, website forms and the public API; skips deactivated users. No conditional rules | Testing | API; rules screen Manual |
 | Lead management, tracking | /features 4.1 | Lead CRUD, list, search, filters, sort, pagination, detail page | Completed | API + Manual |
@@ -39,7 +39,7 @@ the browser, **None** = untested. Rows marked (ext) go beyond what TeleCRM docum
 | Triggers, workflows, drip | /features 4.5 | Automations: 9 triggers, conditions, 12 step types including wait (drip), per-run logs, manual test run | Testing | API + Manual |
 | Payment creation, forecasting | /features 2.9 | Deals per lead (value, probability, expected close, won/lost) with a forecast by expected-close month; manual payment records with received/expected/overdue totals. Payment links need a gateway (Razorpay, not connected) | Testing | API + Manual |
 | Razorpay | /integrations | Payment links from expected payments; webhook (signature-verified) marks them received; connection test against the Razorpay API | Integration Pending (needs the customer's keys) | API (stub server) |
-| Portal integrations (IndiaMART, Justdial, etc.) | /integrations | — | Designed | None |
+| Portal integrations (IndiaMART, Justdial, etc.) | /integrations | IndiaMART CRM pull (scheduled and on demand) and Justdial push URL built; Sulekha, TradeIndia and property portals not yet | Integration Pending (needs the customer's keys) | API (stub server) |
 | Google Sheets, Google Meet, Shopify, WooCommerce | /integrations | — | Not Started | None |
 | Hour-by-hour, daily, sales, agent reports | /features 3 | Reports page: created/won/lost/won value by hour of day, day, week or month in the organisation timezone; filters by period preset or custom dates, agent and source; drill-down to the lead list; CSV export | Testing | API + Manual |
 | Leaderboard | /features 3.3 | Agent leaderboard: created, won, lost, conversion, won value, open, follow-ups completed and on time, overdue, notes; ranked by won then value. Lead-source and follow-up reports alongside | Testing | API + Manual |

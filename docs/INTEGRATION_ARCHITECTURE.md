@@ -50,12 +50,13 @@ provider. There is no code path that sets it otherwise.
 | Provider | Auth | Needs from the customer | Status |
 |---|---|---|---|
 | Website forms / custom API / webhooks | Form token / API key / endpoint secret | Nothing external | **Built** (session 3): `website_form` provider, `POST /public/leads`, outbound webhooks |
-| Meta lead ads, Instagram | OAuth | Meta app (reviewed for `leads_retrieval`, `pages_manage_metadata`) | Awaiting platform credentials |
+| Meta lead ads, Instagram | Page token + app secret | Meta app (reviewed for `leads_retrieval`, `pages_manage_metadata`), Page id, Page token | **Built** (webhook + lead fetch); awaiting the Meta app |
 | Meta Conversions API | Token | Pixel id, access token | Awaiting credentials |
 | WhatsApp Cloud API | Token | WABA id, phone number id, permanent token, app secret, verify token | **Built** (inbox, templates, webhooks, receipts); awaiting the customer's WABA |
 | Google Sheets, Google Ads lead forms | OAuth / webhook key | Google Cloud OAuth client | Awaiting platform credentials |
-| IndiaMART | API key | CRM key (pull API) | Awaiting credentials |
-| Justdial, Sulekha, TradeIndia, 99acres, MagicBricks, Housing, Shiksha | Push webhook or email parse | Portal-side configuration by each customer | Awaiting credentials |
+| IndiaMART | API key | CRM key (pull API) | **Built** (pull every 5 minutes); awaiting the customer's key |
+| Justdial | Push URL with token | Justdial account manager configures it | **Built** |
+| Sulekha, TradeIndia, 99acres, MagicBricks, Housing, Shiksha | Push webhook or email parse | Portal-side configuration by each customer | Awaiting credentials (the website-form endpoint accepts any portal that can post a form) |
 | Exotel | API key + token, ExoPhone | Account SID, API key/token, region, ExoPhone | **Built** (click-to-call, status callbacks, incoming calls); awaiting the customer's account |
 | Knowlarity, MyOperator, MCube, CallerDesk, TeleCMI, Maqsam | API key + webhooks | Account, virtual number | Awaiting credentials |
 | Razorpay | Key + webhook secret | Key id, secret, webhook secret | **Built** (payment links, paid webhook); awaiting the customer's keys |

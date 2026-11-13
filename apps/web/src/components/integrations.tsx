@@ -155,7 +155,8 @@ function ProviderCards() {
   const list = useApi<Connected[]>('/integrations');
   const [form, setForm] = useState<{ def: ProviderDef; existing: Connected | null; values: Record<string, string | boolean> } | null>(null);
   const [busy, setBusy] = useState(false);
-  const defs = (providers.data?.providers ?? []).filter((p) => p.auth === 'credentials' && p.key !== 'smtp');
+  // Website forms and email have their own sections; everything else (credential and push-only providers) is listed here.
+  const defs = (providers.data?.providers ?? []).filter((p) => p.key !== 'smtp' && p.key !== 'website_form');
   if (!defs.length) return null;
   const connectionOf = (key: string) => list.data?.find((i) => i.provider === key) ?? null;
   const open = (def: ProviderDef) => {
@@ -200,7 +201,10 @@ function ProviderCards() {
                   {c?.lastError && <span className="block text-[13px] text-danger">{c.lastError}</span>}
                 </span>
                 {c && <button className="btn-ghost btn-sm" disabled={busy} onClick={() => act(() => api(`/integrations/${c.id}/test`, { body: {} }), 'Connection tested')}><RefreshCw className="h-3.5 w-3.5" />Test</button>}
-                <button className="btn-ghost btn-sm" onClick={() => open(def)}>{c ? 'Edit' : 'Connect'}</button>
+                {c && def.key === 'indiamart' && c.status === 'CONNECTED' && <button className="btn-ghost btn-sm" disabled={busy} onClick={() => act(() => api<{ pulled: number; created: number; throttled?: boolean }>(`/integrations/${c.id}/pull`, { body: {} }).then((r) => toast(r.throttled ? 'IndiaMART asks for one pull every 5 minutes; try again shortly' : `${r.pulled} enquir${r.pulled === 1 ? 'y' : 'ies'} found, ${r.created} new`)), 'Pulled from IndiaMART')}><RefreshCw className="h-3.5 w-3.5" />Pull now</button>}
+                {def.auth === 'webhook_only'
+                  ? !c && <button className="btn-ghost btn-sm" disabled={busy} onClick={() => act(() => api('/integrations', { body: { provider: def.key, name: def.name } }), `${def.name} endpoint created`)}>Create endpoint</button>
+                  : <button className="btn-ghost btn-sm" onClick={() => open(def)}>{c ? 'Edit' : 'Connect'}</button>}
                 {c && <button className="btn-icon" disabled={busy} aria-label={`Remove ${def.name}`} onClick={async () => { if (await confirm({ title: `Disconnect ${def.name}?`, text: 'Features that depend on it stop working until it is connected again.', confirmLabel: 'Disconnect', danger: true })) act(() => api(`/integrations/${c.id}`, { method: 'DELETE' }), `${def.name} disconnected`); }}><Trash2 className="h-4 w-4" /></button>}
               </div>
               {c && def.key === 'whatsapp' && c.status === 'CONNECTED' && (

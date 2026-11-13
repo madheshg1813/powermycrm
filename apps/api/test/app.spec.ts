@@ -1278,7 +1278,7 @@ describe('integrations: website forms and the public API', () => {
     const web = sources.find((s: any) => s.name === 'Website').id;
     await o.post('/custom-fields', { label: 'Budget', type: 'NUMBER' });
 
-    expect((await o.get('/integrations/providers')).body.providers.map((p: any) => p.key)).toEqual(['website_form', 'smtp', 'whatsapp', 'sms_http', 'razorpay', 'exotel']);
+    expect((await o.get('/integrations/providers')).body.providers.map((p: any) => p.key)).toEqual(['website_form', 'smtp', 'whatsapp', 'sms_http', 'razorpay', 'exotel', 'meta_leads', 'indiamart', 'justdial']);
     const created = await o.post('/integrations', { provider: 'website_form', name: 'Landing page', settings: { sourceId: web, ownerId: 'auto', duplicateStrategy: 'skip' }, fieldMapping: { name: 'full_name', cf_budget: 'budget' } });
     expect(created.status).toBe(201);
     expect(created.body).toMatchObject({ status: 'CONNECTED' });
@@ -1562,7 +1562,7 @@ describe('provider adapters: Razorpay and Exotel', () => {
     const pending = (await o.post('/payments', { leadId: lead.id, amount: 2500, status: 'PENDING' })).body;
     expect((await o.post(`/payments/${pending.id}/link`)).status).toBe(400); // nothing connected
     const providers = (await o.get('/integrations/providers')).body.providers;
-    expect(providers.map((p: any) => p.key)).toEqual(['website_form', 'smtp', 'whatsapp', 'sms_http', 'razorpay', 'exotel']);
+    expect(providers.map((p: any) => p.key)).toEqual(['website_form', 'smtp', 'whatsapp', 'sms_http', 'razorpay', 'exotel', 'meta_leads', 'indiamart', 'justdial']);
     expect(providers.find((p: any) => p.key === 'razorpay').needs).toContain('Razorpay account');
     const bad = await o.post('/integrations', { provider: 'razorpay', name: 'Razorpay', credentials: { keyId: 'rzp_test_key', keySecret: 'wrong', webhookSecret: 'whs' } });
     expect(bad.body.status).toBe('ERROR');
@@ -1763,6 +1763,89 @@ describe('messaging: WhatsApp Cloud API and SMS', () => {
     await until(async () => stub.seen.find((s) => decodeURIComponent(s.url).includes('mobiles=9876511111')));
     expect(decodeURIComponent(stub.seen.at(-1)!.url)).toContain('message=Hi Auto Text, thanks for contacting');
     expect((await o.get(`/leads/${auto.id}/activities`)).body.map((a: any) => a.type)).toContain('message_sent');
+  });
+});
+
+function leadSourceStub() {
+  const seen: string[] = [];
+  const server = http.createServer((req, res) => {
+    seen.push(req.url!);
+    const ok = (o: unknown, code = 200) => { res.statusCode = code; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(o)); };
+    const u = new URL(req.url!, 'http://x');
+    if (u.pathname === '/wservce/crm/crmListing/v2/') {
+      if (u.searchParams.get('glusr_crm_key') !== 'im-key-1234567') return ok({ CODE: 401, STATUS: 'FAILURE', MESSAGE: 'Invalid key' });
+      if (!/^\d{2}-[A-Z][a-z]{2}-\d{4}\d{2}:\d{2}:\d{2}$/.test(u.searchParams.get('start_time') ?? '')) return ok({ CODE: 400, MESSAGE: 'Bad time format' });
+      return ok({ CODE: 200, STATUS: 'SUCCESS', TOTAL_RECORDS: 2, RESPONSE: [
+        { UNIQUE_QUERY_ID: 'Q1', SENDER_NAME: 'Ravi Kumar', SENDER_MOBILE: '+91-9811100001', SENDER_EMAIL: 'ravi@example.com', SENDER_COMPANY: 'Kumar Traders', SENDER_CITY: 'Delhi', SUBJECT: 'Requirement for steel pipes', QUERY_PRODUCT_NAME: 'Steel Pipe', QUERY_MESSAGE: 'Need 200 units' },
+        { UNIQUE_QUERY_ID: 'Q2', SENDER_NAME: 'Meena', SENDER_MOBILE: '+91-9811100002', SUBJECT: 'Price enquiry' },
+      ] });
+    }
+    if (u.pathname === '/v21.0/PAGE1') return u.searchParams.get('access_token') === 'page-token-1' ? ok({ name: 'Acme Homes' }) : ok({ error: { message: 'Invalid OAuth access token' } }, 400);
+    if (u.pathname === '/v21.0/LG1') return ok({ field_data: [{ name: 'full_name', values: ['Fatima Shaikh'] }, { name: 'phone_number', values: ['+919811100003'] }, { name: 'email', values: ['fatima@example.com'] }, { name: 'budget', values: ['50-75 lakhs'] }], campaign_name: 'Diwali', ad_name: '2BHK' });
+    ok({ error: 'unknown stub route' }, 404);
+  });
+  return { seen, start: () => new Promise<string>((r) => server.listen(0, '127.0.0.1', () => r(`http://127.0.0.1:${(server.address() as any).port}`))), stop: () => new Promise<void>((r) => server.close(() => r())) };
+}
+
+describe('lead sources: IndiaMART, Justdial and Meta lead ads', () => {
+  const stub = leadSourceStub();
+  beforeAll(async () => { const base = await stub.start(); process.env.INDIAMART_API_BASE = base; process.env.META_GRAPH_BASE = base; });
+  afterAll(async () => { delete process.env.INDIAMART_API_BASE; delete process.env.META_GRAPH_BASE; await stub.stop(); });
+
+  it('pulls IndiaMART enquiries into leads once each', async () => {
+    const o = await registerOrg('IndiaMart');
+    const bad = await o.post('/integrations', { provider: 'indiamart', name: 'IndiaMART', credentials: { crmKey: 'wrong-key-000' } });
+    expect(bad.body.status).toBe('ERROR');
+    expect(bad.body.lastError).toContain('Invalid key');
+    const good = await o.patch(`/integrations/${bad.body.id}`, { credentials: { crmKey: 'im-key-1234567' } });
+    expect(good.body.status).toBe('CONNECTED');
+    expect(good.body.credentials).toEqual({ has_crmKey: true });
+    const pulled = await o.post(`/integrations/${bad.body.id}/pull`);
+    expect(pulled.body).toEqual({ pulled: 2, created: 2 });
+    const ravi = await until(async () => (await o.get('/leads?q=Ravi Kumar')).body.items[0]);
+    expect(ravi).toMatchObject({ phone: '+91-9811100001', email: 'ravi@example.com', company: 'Kumar Traders', city: 'Delhi', source: { name: 'IndiaMART' } });
+    const note = (await o.get(`/leads/${ravi.id}/activities`)).body.find((a: any) => a.type === 'note');
+    expect(note.data.body).toContain('Product: Steel Pipe');
+    expect((await o.post(`/integrations/${bad.body.id}/pull`)).body).toEqual({ pulled: 2, created: 0 }); // same enquiries again: nothing new
+    await until(async () => (await o.get('/leads?q=Meena')).body.items[0]);
+    expect((await o.get('/leads?sourceId=' + ravi.source.id)).body.total).toBe(2);
+  });
+
+  it('accepts Justdial pushes with the token and ignores repeats', async () => {
+    const o = await registerOrg('Justdial');
+    const jd = await o.post('/integrations', { provider: 'justdial', name: 'Justdial' });
+    expect(jd.body.status).toBe('CONNECTED');
+    expect(jd.body.endpointUrl).toContain(`/api/v1/hooks/justdial/${jd.body.id}?token=${jd.body.token}`);
+    const hook = `/api/v1/hooks/justdial/${jd.body.id}`;
+    expect((await request(server).get(`${hook}?token=nope&leadid=J1&name=X&mobile=9811100004`)).status).toBe(401);
+    const r = await request(server).get(`${hook}?token=${jd.body.token}&leadid=J1&prefix=Mr&name=Anil&mobile=9811100004&city=Pune&category=Interior%20Designers&area=Baner`);
+    expect(r.status).toBe(200);
+    expect(r.text).toBe('RECEIVED');
+    expect((await request(server).post(hook).type('form').send({ token: jd.body.token, leadid: 'J1', name: 'Anil', mobile: '9811100004' })).text).toBe('RECEIVED (duplicate)');
+    const lead = await until(async () => (await o.get('/leads?q=Mr Anil')).body.items[0]);
+    expect(lead).toMatchObject({ phone: '9811100004', city: 'Pune', source: { name: 'Justdial' } });
+    expect((await o.get(`/leads/${lead.id}/activities`)).body.find((a: any) => a.type === 'note').data.body).toContain('Category: Interior Designers');
+  });
+
+  it('receives Meta lead-ad leads from signed webhooks and fetches the form answers', async () => {
+    const o = await registerOrg('MetaLeads');
+    const creds = { pageId: 'PAGE1', pageAccessToken: 'wrong', appSecret: 'meta-secret-1', verifyToken: 'verify-meta-1' };
+    const bad = await o.post('/integrations', { provider: 'meta_leads', name: 'Meta', credentials: creds });
+    expect(bad.body.status).toBe('ERROR');
+    const good = await o.patch(`/integrations/${bad.body.id}`, { credentials: { pageAccessToken: 'page-token-1' } });
+    expect(good.body).toMatchObject({ status: 'CONNECTED', summary: 'Connected to the Page "Acme Homes"' });
+    const hook = `/api/v1/hooks/meta_leads/${bad.body.id}`;
+    expect((await request(server).get(`${hook}?hub.mode=subscribe&hub.verify_token=verify-meta-1&hub.challenge=C9`)).text).toBe('C9');
+    const body = JSON.stringify({ object: 'page', entry: [{ id: 'PAGE1', changes: [{ field: 'leadgen', value: { leadgen_id: 'LG1', page_id: 'PAGE1', form_id: 'F1' } }] }] });
+    const sign = (k: string) => 'sha256=' + createHmac('sha256', k).update(body).digest('hex');
+    expect((await request(server).post(hook).set('Content-Type', 'application/json').set('X-Hub-Signature-256', sign('nope')).send(body)).status).toBe(401);
+    expect((await request(server).post(hook).set('Content-Type', 'application/json').set('X-Hub-Signature-256', sign('meta-secret-1')).send(body)).body).toEqual({ ok: true, queued: 1 });
+    expect((await request(server).post(hook).set('Content-Type', 'application/json').set('X-Hub-Signature-256', sign('meta-secret-1')).send(body)).body).toEqual({ ok: true, queued: 0 });
+    const lead = await until(async () => (await o.get('/leads?q=Fatima')).body.items[0]);
+    expect(lead).toMatchObject({ phone: '+919811100003', email: 'fatima@example.com', source: { name: 'Facebook' } });
+    const note = (await o.get(`/leads/${lead.id}/activities`)).body.find((a: any) => a.type === 'note').data.body;
+    expect(note).toContain('budget: 50-75 lakhs');
+    expect(note).toContain('Ad: Diwali / 2BHK');
   });
 });
 
