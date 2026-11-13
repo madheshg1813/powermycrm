@@ -52,14 +52,14 @@ provider. There is no code path that sets it otherwise.
 | Website forms / custom API / webhooks | Form token / API key / endpoint secret | Nothing external | **Built** (session 3): `website_form` provider, `POST /public/leads`, outbound webhooks |
 | Meta lead ads, Instagram | OAuth | Meta app (reviewed for `leads_retrieval`, `pages_manage_metadata`) | Awaiting platform credentials |
 | Meta Conversions API | Token | Pixel id, access token | Awaiting credentials |
-| WhatsApp Cloud API | Token | WABA id, phone number id, permanent token, app secret | Awaiting credentials |
+| WhatsApp Cloud API | Token | WABA id, phone number id, permanent token, app secret, verify token | **Built** (inbox, templates, webhooks, receipts); awaiting the customer's WABA |
 | Google Sheets, Google Ads lead forms | OAuth / webhook key | Google Cloud OAuth client | Awaiting platform credentials |
 | IndiaMART | API key | CRM key (pull API) | Awaiting credentials |
 | Justdial, Sulekha, TradeIndia, 99acres, MagicBricks, Housing, Shiksha | Push webhook or email parse | Portal-side configuration by each customer | Awaiting credentials |
 | Exotel | API key + token, ExoPhone | Account SID, API key/token, region, ExoPhone | **Built** (click-to-call, status callbacks, incoming calls); awaiting the customer's account |
 | Knowlarity, MyOperator, MCube, CallerDesk, TeleCMI, Maqsam | API key + webhooks | Account, virtual number | Awaiting credentials |
 | Razorpay | Key + webhook secret | Key id, secret, webhook secret | **Built** (payment links, paid webhook); awaiting the customer's keys |
-| SMS gateway | API key | DLT entity id, sender id, templates | Awaiting credentials |
+| SMS gateway (any HTTP API) | URL template + auth header | Send URL, sender id, DLT templates | **Built** (outbound, test SMS on connect); awaiting the customer's gateway |
 | Email | SMTP / OAuth | SMTP credentials or Google/Microsoft OAuth | Awaiting credentials |
 | Shopify, WooCommerce | OAuth / keys | Store credentials | Awaiting credentials |
 

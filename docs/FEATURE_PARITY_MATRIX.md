@@ -33,8 +33,8 @@ the browser, **None** = untested. Rows marked (ext) go beyond what TeleCRM docum
 | Call log and dispositions (ext) | /crm-with-dialer | Manual call log per lead and per agent, workspace-defined outcomes, talk time on the leaderboard | Testing | API + Manual |
 | Call recording | /features 2.4 | Recording URL from Exotel stored on the call and linked on the lead page (recording itself stays with Exotel) | Integration Pending | API |
 | IVR / telephony providers | /call-center-crm | Exotel: click-to-call, terminal status and recording callbacks, incoming-call logging with owner notification | Integration Pending (needs an Exotel account) | API (stub server) |
-| 1-click WhatsApp, SMS, email | /features 2.5–2.6 | — | Not Started | None |
-| WhatsApp Cloud API inbox, templates, bulk, chatbot | /whatsapp-crm | — | Designed | None |
+| 1-click WhatsApp, SMS, email | /features 2.5–2.6 | WhatsApp and SMS buttons on the lead page open the inbox thread; email through the workspace SMTP connection (automations) | Integration Pending (needs Meta / SMS gateway accounts) | API (stub servers) |
+| WhatsApp Cloud API inbox, templates, bulk, chatbot | /whatsapp-crm | Inbox, template sync and sending, 24-hour window, receipts, inbound webhooks, auto-created leads, template sends from automations. No bulk broadcast screen or chatbot yet | Integration Pending (needs a WABA) | API (stub server) |
 | WhatsApp chat sync | /whatsapp-crm | — | Researching | None |
 | Triggers, workflows, drip | /features 4.5 | Automations: 9 triggers, conditions, 12 step types including wait (drip), per-run logs, manual test run | Testing | API + Manual |
 | Payment creation, forecasting | /features 2.9 | Deals per lead (value, probability, expected close, won/lost) with a forecast by expected-close month; manual payment records with received/expected/overdue totals. Payment links need a gateway (Razorpay, not connected) | Testing | API + Manual |

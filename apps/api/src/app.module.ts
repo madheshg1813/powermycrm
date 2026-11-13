@@ -21,6 +21,7 @@ import { DashboardController } from './modules/dashboard';
 import { OpportunitiesController, PaymentsController } from './modules/deals';
 import { LeadsController, LeadsService } from './modules/leads';
 import { ListsController } from './modules/lists';
+import { MessagingController, MessagingService } from './modules/messaging';
 import { OrgController } from './modules/org';
 import { ReportsController } from './modules/reports';
 import { TasksController } from './modules/tasks';
@@ -43,7 +44,7 @@ class HealthController {
       skipIf: () => process.env.NODE_ENV === 'test',
     }),
   ],
-  controllers: [HealthController, AuthController, OrgController, CatalogController, CustomiseController, LeadsController, ListsController, TasksController, DashboardController, ReportsController, OpportunitiesController, PaymentsController, WebhooksController, IntegrationsController, ApiKeysController, EmailController, AttachmentsController, CallsController, AutomationsController, PlanController, AdminController],
+  controllers: [HealthController, AuthController, OrgController, CatalogController, CustomiseController, LeadsController, ListsController, TasksController, DashboardController, ReportsController, OpportunitiesController, PaymentsController, WebhooksController, IntegrationsController, ApiKeysController, EmailController, AttachmentsController, CallsController, AutomationsController, PlanController, AdminController, MessagingController],
   providers: [
     PrismaService,
     PlanService,
@@ -51,6 +52,7 @@ class HealthController {
     StorageService,
     OutboxService,
     EmailService,
+    MessagingService,
     AutomationsService,
     AuthService,
     LeadsService,

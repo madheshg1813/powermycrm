@@ -24,7 +24,8 @@ PowerMyCRM is **not** at feature parity with TeleCRM and is not production-ready
 | 10 | Automation | Completed: trigger + conditions + ordered steps (assign, stage, label, list, follow-up, notify, email, webhook, update field, archive, wait) with per-run logs and "run on this lead" |
 | 14 | Super admin, plans | Completed without billing: platform admin area (workspaces, suspension, plan changes, health), plan catalogue with limits enforced on users, leads, automations, storage and webhooks |
 | 16 | Mobile | Installable PWA (manifest, icons, offline page, service worker in production builds) on top of the responsive layouts. No native app |
-| 9, 12, 13, 15, 17, 18 | WhatsApp, SMS, AI, billing provider, production deployment | Not started |
+| 9 | WhatsApp and SMS | WhatsApp Cloud API two-way inbox (templates, 24-hour window, receipts, auto-created leads) and outbound SMS through any HTTP gateway; automation steps for both. Needs the customer's Meta and SMS gateway accounts |
+| 12, 13, 15, 17, 18 | AI, billing provider, production deployment | Not started |
 
 ## What works today
 
@@ -49,6 +50,7 @@ PowerMyCRM is **not** at feature parity with TeleCRM and is not production-ready
 - Platform admin (`/admin`, for emails in `SUPER_ADMIN_EMAILS`): overview with 24-hour failure counts, every workspace with owner, plan, users, leads and last activity, search, suspend/reactivate (signs everyone out at once), change plan, and the plan catalogue (create, edit limits and prices, retire, choose the default).
 - Installable on phones and desktops as a PWA (Add to Home Screen); pages always load from the network and an offline page explains when there is no connection.
 - Connected services (Settings → Integrations): a provider registry where each provider declares its credentials and a connection test against the real service; status is "connected" only after that test passes. Built: Razorpay (payment links; webhook marks payments received), Exotel (click-to-call, call callbacks, incoming calls), SMTP email, website forms.
+- Inbox: WhatsApp (Cloud API) and SMS conversations per lead. WhatsApp: approved templates synced from the WhatsApp Business Account, free-form replies inside the 24-hour customer window, signature-verified webhooks for inbound messages and delivery/read receipts, unknown numbers become leads (optional), owner notified. SMS: any HTTP gateway (MSG91, Twilio, Textlocal…) configured by URL template, connected only after a real test SMS. Automation steps "Send WhatsApp template" and "Send SMS".
 - Dashboard with live figures; global search; in-app notifications; audit log (API).
 - Settings: profile, password, devices, organisation, stages, pipelines, sources, labels.
 
@@ -69,7 +71,7 @@ workspace login is recorded in `.env.local` (git-ignored).
 ## Next tasks, in order
 
 1. Done in session 3: static lead lists; reports; custom-field filters, sort and columns; deals with forecast; payments; job queue, outbox, webhooks, website forms, the public API, SMTP email delivery and email verification.
-2. Remaining provider adapters: WhatsApp Cloud API inbox and templates, SMS gateway, IndiaMART pull, Justdial push, Meta lead ads. (Razorpay and Exotel are done.)
+2. Remaining lead-source adapters: IndiaMART pull, Justdial push, Meta lead ads. (Razorpay, Exotel, WhatsApp and SMS are done.)
 3. Conditional assignment rules; S3 storage adapter for production.
 4. Won/lost reasons, forecasting, stage SLA and ageing.
 5. Calendar view, recurring tasks, reminder scheduler (needs the job queue).

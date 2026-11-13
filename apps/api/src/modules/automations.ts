@@ -7,6 +7,8 @@ import { QueueService } from '../common/queue';
 import { PlanService } from './admin';
 import { EmailService, layout } from './email';
 import { LeadsService } from './leads';
+import { MessagingService } from './messaging';
+import { IntegrationsController } from './integrations';
 
 export const TRIGGERS = [
   { key: 'lead.created', label: 'Lead created' },
@@ -30,6 +32,7 @@ export const STEP_TYPES = [
   { key: 'assign', label: 'Assign owner' }, { key: 'move_stage', label: 'Move to stage' }, { key: 'add_label', label: 'Add label' }, { key: 'remove_label', label: 'Remove label' },
   { key: 'add_to_list', label: 'Add to list' }, { key: 'create_task', label: 'Create follow-up' }, { key: 'send_email', label: 'Send email' }, { key: 'notify', label: 'Notify a user' },
   { key: 'webhook', label: 'Call a webhook URL' }, { key: 'update_field', label: 'Update a field' }, { key: 'archive', label: 'Archive the lead' }, { key: 'wait', label: 'Wait' },
+  { key: 'send_whatsapp', label: 'Send WhatsApp template' }, { key: 'send_sms', label: 'Send SMS' },
 ] as const;
 
 const conditionSchema = z.object({ field: z.string().min(1).max(60), op: z.enum(OPS), value: z.string().max(300).optional() });
@@ -115,6 +118,7 @@ export class AutomationsService implements OnModuleInit {
     private readonly queue: QueueService,
     private readonly leads: LeadsService,
     private readonly email: EmailService,
+    private readonly messaging: MessagingService,
   ) {}
 
   onModuleInit() {
@@ -260,6 +264,23 @@ export class AutomationsService implements OnModuleInit {
         const r = await this.email.send({ organisationId: ctx.orgId, userId: null, kind: 'automation', to, subject, text, html: layout(subject, text.split(/\n{2,}/)) });
         return r.willSend ? `Email queued to ${to}` : `Email recorded but not sent: no email connection`;
       }
+      case 'send_whatsapp': {
+        if (!lead.phone) return 'Skipped: the lead has no phone number';
+        const wa = await IntegrationsController.connected(this.prisma, ctx.orgId, 'whatsapp');
+        if (!wa) return 'Skipped: WhatsApp is not connected';
+        const conv = await this.messaging.conversationFor(ctx.orgId, 'whatsapp', lead.phone, lead.id, wa.id);
+        const params = s('params') ? s('params').split('|').map((p) => fill(p.trim(), lead, org)) : [];
+        await this.messaging.send({ orgId: ctx.orgId, userId: ctx.userId }, conv.id, { templateName: s('templateName'), language: s('language') || 'en', params });
+        return `WhatsApp template "${s('templateName')}" sent`;
+      }
+      case 'send_sms': {
+        if (!lead.phone) return 'Skipped: the lead has no phone number';
+        const gw = await IntegrationsController.connected(this.prisma, ctx.orgId, 'sms_http');
+        if (!gw) return 'Skipped: no SMS gateway is connected';
+        const conv = await this.messaging.conversationFor(ctx.orgId, 'sms', lead.phone, lead.id, gw.id);
+        await this.messaging.send({ orgId: ctx.orgId, userId: ctx.userId }, conv.id, { text: fill(s('body'), lead, org) });
+        return 'SMS sent';
+      }
       case 'webhook': {
         const url = s('url');
         if (!/^https?:\/\//i.test(url)) throw new Error('Webhook step needs an http(s) URL');
@@ -301,6 +322,8 @@ export class AutomationsController {
       if ((st.type === 'notify' || st.type === 'create_task') && s(st.type === 'notify' ? 'userId' : 'assignee') && s(st.type === 'notify' ? 'userId' : 'assignee') !== 'owner') await need(this.prisma.membership.findFirst({ where: { userId: s(st.type === 'notify' ? 'userId' : 'assignee'), organisationId: o, status: 'ACTIVE' } }), 'Choose a user');
       if (st.type === 'send_email' && !s('body')) throw new BadRequestException('Write the email body');
       if (st.type === 'webhook' && !/^https?:\/\//i.test(s('url'))) throw new BadRequestException('Enter the webhook URL');
+      if (st.type === 'send_whatsapp' && !s('templateName')) throw new BadRequestException('Choose the WhatsApp template');
+      if (st.type === 'send_sms' && !s('body')) throw new BadRequestException('Write the SMS text');
       if (st.type === 'wait' && !(Number(st.seconds ?? 0) + Number(st.minutes ?? 0) + Number(st.hours ?? 0) + Number(st.days ?? 0) > 0)) throw new BadRequestException('Enter how long to wait');
       if (st.type === 'update_field' && !s('field')) throw new BadRequestException('Choose the field to update');
     }

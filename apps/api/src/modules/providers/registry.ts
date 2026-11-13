@@ -2,7 +2,9 @@ import { z } from 'zod';
 import { exotel } from './exotel';
 import { ProviderDef } from './index';
 import { razorpay } from './razorpay';
+import { sms } from './sms';
 import { smtp } from './smtp';
+import { whatsapp } from './whatsapp';
 
 const websiteForm: ProviderDef = {
   key: 'website_form',
@@ -17,6 +19,6 @@ const websiteForm: ProviderDef = {
 };
 
 /** Every provider the product can connect. Order is the order shown in Settings. */
-export const PROVIDERS: ProviderDef[] = [websiteForm, smtp, razorpay, exotel];
+export const PROVIDERS: ProviderDef[] = [websiteForm, smtp, whatsapp, sms, razorpay, exotel];
 export const providerByKey = (key: string) => PROVIDERS.find((p) => p.key === key);
 export const PROVIDER_KEYS = PROVIDERS.map((p) => p.key) as [string, ...string[]];

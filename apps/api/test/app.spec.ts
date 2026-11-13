@@ -1278,7 +1278,7 @@ describe('integrations: website forms and the public API', () => {
     const web = sources.find((s: any) => s.name === 'Website').id;
     await o.post('/custom-fields', { label: 'Budget', type: 'NUMBER' });
 
-    expect((await o.get('/integrations/providers')).body.providers.map((p: any) => p.key)).toEqual(['website_form', 'smtp', 'razorpay', 'exotel']);
+    expect((await o.get('/integrations/providers')).body.providers.map((p: any) => p.key)).toEqual(['website_form', 'smtp', 'whatsapp', 'sms_http', 'razorpay', 'exotel']);
     const created = await o.post('/integrations', { provider: 'website_form', name: 'Landing page', settings: { sourceId: web, ownerId: 'auto', duplicateStrategy: 'skip' }, fieldMapping: { name: 'full_name', cf_budget: 'budget' } });
     expect(created.status).toBe(201);
     expect(created.body).toMatchObject({ status: 'CONNECTED' });
@@ -1562,7 +1562,7 @@ describe('provider adapters: Razorpay and Exotel', () => {
     const pending = (await o.post('/payments', { leadId: lead.id, amount: 2500, status: 'PENDING' })).body;
     expect((await o.post(`/payments/${pending.id}/link`)).status).toBe(400); // nothing connected
     const providers = (await o.get('/integrations/providers')).body.providers;
-    expect(providers.map((p: any) => p.key)).toEqual(['website_form', 'smtp', 'razorpay', 'exotel']);
+    expect(providers.map((p: any) => p.key)).toEqual(['website_form', 'smtp', 'whatsapp', 'sms_http', 'razorpay', 'exotel']);
     expect(providers.find((p: any) => p.key === 'razorpay').needs).toContain('Razorpay account');
     const bad = await o.post('/integrations', { provider: 'razorpay', name: 'Razorpay', credentials: { keyId: 'rzp_test_key', keySecret: 'wrong', webhookSecret: 'whs' } });
     expect(bad.body.status).toBe('ERROR');
@@ -1634,6 +1634,135 @@ describe('provider adapters: Razorpay and Exotel', () => {
     await request(server).post(hook).type('form').send({ CallSid: 'CA-IN-1', Status: 'completed', Duration: '40' });
     expect((await o.get(`/calls?leadId=${lead.id}&direction=INBOUND`)).body.items[0]).toMatchObject({ status: 'COMPLETED', durationSec: 40 });
     expect((await request(server).post('/api/v1/hooks/exotel/nope').send({ CallSid: 'x' })).status).toBe(404);
+  });
+});
+
+/** Stand-in for the Meta Graph API and an SMS gateway. */
+function messagingStub() {
+  const seen: { method: string; url: string; auth: string | undefined; body: string }[] = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      seen.push({ method: req.method!, url: req.url!, auth: req.headers.authorization, body });
+      const ok = (o: unknown, code = 200) => { res.statusCode = code; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(o)); };
+      const auth = req.headers.authorization === 'Bearer wa-token-1';
+      if (req.url!.startsWith('/v21.0/PHONE1?')) return auth ? ok({ display_phone_number: '+91 98765 00000', verified_name: 'Acme Sales', quality_rating: 'GREEN' }) : ok({ error: { message: 'Invalid OAuth access token' } }, 401);
+      if (req.url === '/v21.0/PHONE1/messages') return auth ? ok({ messages: [{ id: `wamid.${seen.length}` }] }) : ok({ error: { message: 'Invalid OAuth access token' } }, 401);
+      if (req.url!.startsWith('/v21.0/WABA1/message_templates')) return ok({ data: [{ name: 'welcome_offer', language: 'en', status: 'APPROVED', category: 'MARKETING', components: [{ type: 'BODY', text: 'Hi {{1}}, thanks for your interest in {{2}}. Reply to chat with us.' }] }, { name: 'pending_one', language: 'en', status: 'PENDING', category: 'UTILITY', components: [{ type: 'BODY', text: 'Hello' }] }] });
+      if (req.url!.startsWith('/sms/send')) { const u = new URL(req.url!, 'http://x'); if (req.headers['authkey'] !== 'sms-key-1') return ok({ type: 'error', message: 'bad authkey' }, 401); return ok({ type: 'success', message: `sent to ${u.searchParams.get('mobiles')}` }); }
+      ok({ error: 'unknown stub route' }, 404);
+    });
+  });
+  return { seen, start: () => new Promise<string>((r) => server.listen(0, '127.0.0.1', () => r(`http://127.0.0.1:${(server.address() as any).port}`))), stop: () => new Promise<void>((r) => server.close(() => r())) };
+}
+
+describe('messaging: WhatsApp Cloud API and SMS', () => {
+  const stub = messagingStub();
+  let base: string;
+  beforeAll(async () => { base = await stub.start(); process.env.META_GRAPH_BASE = base; });
+  afterAll(async () => { delete process.env.META_GRAPH_BASE; await stub.stop(); });
+
+  it('runs a two-way WhatsApp inbox: templates, the 24-hour window, inbound messages, receipts and auto-created leads', async () => {
+    const o = await registerOrg('Wa');
+    const agent = await addMember(o, 'Sales Agent');
+    const lead = (await o.post('/leads', { name: 'Chat Lead', phone: '9876512345' })).body;
+    expect((await o.post('/conversations', { leadId: lead.id })).status).toBe(400); // not connected
+    const bad = await o.post('/integrations', { provider: 'whatsapp', name: 'WhatsApp', credentials: { phoneNumberId: 'PHONE1', wabaId: 'WABA1', accessToken: 'wrong', appSecret: 'app-secret-1', verifyToken: 'verify-me-123' } });
+    expect(bad.body.status).toBe('ERROR');
+    expect(bad.body.lastError).toContain('Invalid OAuth');
+    const good = await o.patch(`/integrations/${bad.body.id}`, { credentials: { accessToken: 'wa-token-1' } });
+    expect(good.body.status).toBe('CONNECTED');
+    expect(good.body.summary).toContain('Acme Sales');
+    expect(good.body.credentials).toMatchObject({ phoneNumberId: 'PHONE1', verifyToken: 'verify-me-123', has_accessToken: true, has_appSecret: true });
+    const id = bad.body.id;
+
+    // Webhook verification handshake.
+    const challenge = await request(server).get(`/api/v1/hooks/whatsapp/${id}?hub.mode=subscribe&hub.verify_token=verify-me-123&hub.challenge=CH123`);
+    expect(challenge.status).toBe(200);
+    expect(challenge.text).toBe('CH123');
+    expect((await request(server).get(`/api/v1/hooks/whatsapp/${id}?hub.mode=subscribe&hub.verify_token=wrong&hub.challenge=CH123`)).status).toBe(401);
+
+    // Templates sync; only approved ones can be sent; free text needs an open window.
+    expect((await o.post('/message-templates/sync')).body.synced).toBe(2);
+    const templates = (await o.get('/message-templates')).body;
+    expect(templates.find((t: any) => t.name === 'welcome_offer')).toMatchObject({ status: 'APPROVED', variables: 2 });
+    const conv = (await o.post('/conversations', { leadId: lead.id })).body;
+    expect(conv.phone).toBe('919876512345');
+    const closed = await o.post(`/conversations/${conv.id}/messages`, { text: 'Hello?' });
+    expect(closed.status).toBe(400);
+    expect(closed.body.code).toBe('WINDOW_CLOSED');
+    expect((await o.post(`/conversations/${conv.id}/messages`, { templateName: 'pending_one', language: 'en', params: [] })).status).toBe(400);
+    expect((await o.post(`/conversations/${conv.id}/messages`, { templateName: 'welcome_offer', language: 'en', params: ['Chat Lead'] })).status).toBe(400); // needs 2 values
+    const sent = await o.post(`/conversations/${conv.id}/messages`, { templateName: 'welcome_offer', language: 'en', params: ['Chat Lead', 'the annual plan'] });
+    expect(sent.status).toBe(201);
+    expect(sent.body).toMatchObject({ status: 'SENT', type: 'template', body: 'Hi Chat Lead, thanks for your interest in the annual plan. Reply to chat with us.' });
+    const graph = JSON.parse(stub.seen.find((s) => s.url === '/v21.0/PHONE1/messages')!.body);
+    expect(graph).toMatchObject({ to: '919876512345', type: 'template', template: { name: 'welcome_offer', language: { code: 'en' } } });
+
+    // The customer replies: signed webhook, unread count, lead timeline, owner notified, window opens.
+    const hook = `/api/v1/hooks/whatsapp/${id}`;
+    const reply = JSON.stringify({ entry: [{ changes: [{ value: { contacts: [{ wa_id: '919876512345', profile: { name: 'Chat Lead' } }], messages: [{ from: '919876512345', id: 'wamid.in1', type: 'text', timestamp: String(Math.floor(Date.now() / 1000)), text: { body: 'Yes, tell me more' } }] } }] }] });
+    const sign = (secret: string, body: string) => 'sha256=' + createHmac('sha256', secret).update(body).digest('hex');
+    expect((await request(server).post(hook).set('Content-Type', 'application/json').set('X-Hub-Signature-256', sign('nope', reply)).send(reply)).status).toBe(401);
+    const got = await request(server).post(hook).set('Content-Type', 'application/json').set('X-Hub-Signature-256', sign('app-secret-1', reply)).send(reply);
+    expect(got.body).toEqual({ ok: true, received: 1, statuses: 0 });
+    const thread = (await o.get(`/conversations/${conv.id}`)).body;
+    expect(thread.windowOpen).toBe(true);
+    expect(thread.unread).toBe(1);
+    expect(thread.messages.map((m: any) => [m.direction, m.status])).toEqual([['OUT', 'SENT'], ['IN', 'RECEIVED']]);
+    expect((await o.get('/notifications')).body.items[0].title).toContain('WhatsApp from Chat Lead');
+    expect((await o.get(`/leads/${lead.id}/activities`)).body.map((a: any) => a.type)).toEqual(expect.arrayContaining(['message_sent', 'message_received']));
+    // Replaying the same message id changes nothing; now free text goes through; receipts update it.
+    expect((await request(server).post(hook).set('Content-Type', 'application/json').set('X-Hub-Signature-256', sign('app-secret-1', reply)).send(reply)).body.received).toBe(0);
+    const text = await o.post(`/conversations/${conv.id}/messages`, { text: 'Great, here are the details…' });
+    expect(text.status).toBe(201);
+    expect(text.body.providerRef).toMatch(/^wamid\./);
+    const receipt = JSON.stringify({ entry: [{ changes: [{ value: { statuses: [{ id: text.body.providerRef, status: 'read' }] } }] }] });
+    expect((await request(server).post(hook).set('Content-Type', 'application/json').set('X-Hub-Signature-256', sign('app-secret-1', receipt)).send(receipt)).body.statuses).toBe(1);
+    expect((await o.get(`/conversations/${conv.id}`)).body.messages.at(-1).status).toBe('READ');
+    await o.post(`/conversations/${conv.id}/read`);
+    expect((await o.get('/conversations')).body).toMatchObject({ total: 1, unreadTotal: 0 });
+
+    // An unknown number becomes a lead (auto-create on) and its own conversation; the agent only sees their scope.
+    const stranger = JSON.stringify({ entry: [{ changes: [{ value: { contacts: [{ wa_id: '919111122222', profile: { name: 'New Person' } }], messages: [{ from: '919111122222', id: 'wamid.in2', type: 'image', timestamp: String(Math.floor(Date.now() / 1000)) }] } }] }] });
+    await request(server).post(hook).set('Content-Type', 'application/json').set('X-Hub-Signature-256', sign('app-secret-1', stranger)).send(stranger);
+    const created = (await o.get('/leads?q=New Person')).body.items[0];
+    expect(created.phone).toBe('919111122222');
+    expect((await o.get('/conversations')).body.total).toBe(2);
+    expect((await o.get('/conversations?unread=true')).body.items[0].last.body).toBe('[Image]');
+    expect((await agent.get('/conversations')).body.total).toBe(0);
+    expect((await agent.get(`/conversations/${conv.id}`)).status).toBe(404);
+    const other = await registerOrg('WaOther');
+    expect((await other.get('/conversations')).body.total).toBe(0);
+    expect((await request(server).post('/api/v1/hooks/whatsapp/nope').send({})).status).toBe(404);
+  });
+
+  it('sends SMS through a configured HTTP gateway, connecting only after a real test message', async () => {
+    const o = await registerOrg('Sms');
+    const lead = (await o.post('/leads', { name: 'Text Lead', phone: '9876598765' })).body;
+    const creds = { sendUrl: `${base}/sms/send?mobiles={to}&message={message}&sender={senderId}`, method: 'GET', authHeaderName: 'authkey', authHeaderValue: 'wrong', senderId: 'ACMECO', successMatch: 'success', testNumber: '919000000001' };
+    const bad = await o.post('/integrations', { provider: 'sms_http', name: 'SMS', credentials: creds });
+    expect(bad.body.status).toBe('ERROR');
+    expect(bad.body.lastError).toContain('401');
+    const good = await o.patch(`/integrations/${bad.body.id}`, { credentials: { authHeaderValue: 'sms-key-1' } });
+    expect(good.body.status).toBe('CONNECTED');
+    expect(good.body.summary).toContain('919000000001');
+    const test = stub.seen.find((s) => s.url.includes('mobiles=919000000001'))!;
+    expect(decodeURIComponent(test.url)).toContain('message=PowerMyCRM: your SMS gateway is connected.');
+    const conv = (await o.post('/conversations', { leadId: lead.id, channel: 'sms' })).body;
+    expect(conv.channel).toBe('sms');
+    const sent = await o.post(`/conversations/${conv.id}/messages`, { text: 'Your demo is at 4pm' });
+    expect(sent.status).toBe(201);
+    expect(sent.body.status).toBe('SENT');
+    expect(decodeURIComponent(stub.seen.at(-1)!.url)).toContain('mobiles=9876598765&message=Your demo is at 4pm&sender=ACMECO');
+    expect((await o.get(`/leads/${lead.id}/activities`)).body.find((a: any) => a.type === 'message_sent').data.channel).toBe('sms');
+    // Automation step: SMS on lead creation.
+    await o.post('/automations', { name: 'SMS welcome', trigger: 'lead.created', steps: [{ type: 'send_sms', body: 'Hi {{lead.name}}, thanks for contacting {{org.name}}' }] });
+    const auto = (await o.post('/leads', { name: 'Auto Text', phone: '9876511111' })).body;
+    await until(async () => stub.seen.find((s) => decodeURIComponent(s.url).includes('mobiles=9876511111')));
+    expect(decodeURIComponent(stub.seen.at(-1)!.url)).toContain('message=Hi Auto Text, thanks for contacting');
+    expect((await o.get(`/leads/${auto.id}/activities`)).body.map((a: any) => a.type)).toContain('message_sent');
   });
 });
 

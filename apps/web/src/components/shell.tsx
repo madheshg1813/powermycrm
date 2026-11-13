@@ -1,6 +1,6 @@
 'use client';
 import {
-  Banknote, BarChart3, Bell, Building2, CalendarCheck, ChevronsLeft, Handshake, ShieldCheck, ChevronsRight, ChevronDown, Columns3, LayoutDashboard, Menu, Plus, Search, Settings, UserPlus, Users, UsersRound,
+  Banknote, BarChart3, Bell, Building2, CalendarCheck, ChevronsLeft, Handshake, MessageCircle, ShieldCheck, ChevronsRight, ChevronDown, Columns3, LayoutDashboard, Menu, Plus, Search, Settings, UserPlus, Users, UsersRound,
 } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
@@ -8,7 +8,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, setAccessToken, useApi } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { relTime } from '@/lib/format';
-import { Lead, useChanged } from '@/lib/refs';
+import { Lead, useChanged, useRefs } from '@/lib/refs';
 import { LeadForm, TaskForm } from './forms';
 import { ColorDot, Dropdown, Logo, Spinner, cx } from './ui';
 
@@ -23,7 +23,11 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const [leadForm, setLeadForm] = useState(false);
   const [taskForm, setTaskForm] = useState(false);
   const overdue = useApi<{ counts: { overdue: number } }>('/tasks?view=overdue&pageSize=1');
-  useChanged(overdue.reload);
+  const { connected } = useRefs();
+  const messaging = connected.whatsapp || connected.sms_http;
+  const inbox = useApi<{ unreadTotal: number }>(messaging && can('leads.view') ? '/conversations?pageSize=1' : null);
+  useChanged(() => { overdue.reload(); inbox.reload(); });
+  useEffect(() => { const t = setInterval(() => { if (document.visibilityState === 'visible') inbox.reload(); }, 30_000); return () => clearInterval(t); }, [inbox]);
 
   useEffect(() => {
     setCollapsed(localStorage.getItem('pmc:nav') === 'collapsed');
@@ -37,6 +41,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
     { href: '/leads', label: 'Leads', icon: Users, show: can('leads.view') },
     { href: '/pipeline', label: 'Pipeline', icon: Columns3, show: can('leads.view') },
     { href: '/follow-ups', label: 'Follow-ups', icon: CalendarCheck, badge: overdue.data?.counts.overdue },
+    { href: '/inbox', label: 'Inbox', icon: MessageCircle, show: !!messaging && can('leads.view'), badge: inbox.data?.unreadTotal },
     { href: '/opportunities', label: 'Deals', icon: Handshake, show: can('leads.view') },
     { href: '/payments', label: 'Payments', icon: Banknote, show: can('payments.view') },
     { href: '/reports', label: 'Reports', icon: BarChart3, show: can('reports.view') },

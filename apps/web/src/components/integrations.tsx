@@ -203,6 +203,9 @@ function ProviderCards() {
                 <button className="btn-ghost btn-sm" onClick={() => open(def)}>{c ? 'Edit' : 'Connect'}</button>
                 {c && <button className="btn-icon" disabled={busy} aria-label={`Remove ${def.name}`} onClick={async () => { if (await confirm({ title: `Disconnect ${def.name}?`, text: 'Features that depend on it stop working until it is connected again.', confirmLabel: 'Disconnect', danger: true })) act(() => api(`/integrations/${c.id}`, { method: 'DELETE' }), `${def.name} disconnected`); }}><Trash2 className="h-4 w-4" /></button>}
               </div>
+              {c && def.key === 'whatsapp' && c.status === 'CONNECTED' && (
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-[13px]"><button className="btn-ghost btn-sm" disabled={busy} onClick={() => act(() => api('/message-templates/sync', { body: {} }).then((r: { synced: number }) => toast(`${r.synced} template${r.synced === 1 ? '' : 's'} synced`)), 'Templates synced')}><RefreshCw className="h-3.5 w-3.5" />Sync templates</button><span className="text-ink-muted">Approved templates from your WhatsApp Business Account are used for first contact and automations.</span></div>
+              )}
               {c && def.webhook && c.endpointUrl && (
                 <div className="mt-2 text-[13px]"><span className="text-ink-muted">Webhook URL for {def.name}: </span><code className="rounded-lg bg-cream px-2 py-1 break-all">{c.endpointUrl}</code> <CopyButton text={c.endpointUrl} /><span className="mt-1 block text-ink-muted">{def.webhook.note}</span></div>
               )}

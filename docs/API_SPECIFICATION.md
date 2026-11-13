@@ -55,7 +55,9 @@ The organisation is always taken from the token, never from the request.
 | GET `/integrations/connected` | signed in | Which providers are connected (drives buttons in the UI) |
 | POST `/payments/:id/link` | `payments.manage` | Razorpay payment link for an expected payment |
 | POST `/calls/click-to-call` (`leadId`) | `leads.view` | Start a call through the connected telephony provider |
-| POST `/hooks/razorpay/:integrationId`, POST `/hooks/exotel/:integrationId` | public (signature / unguessable id) | Provider callbacks |
+| POST `/hooks/razorpay/:integrationId`, POST `/hooks/exotel/:integrationId`, GET/POST `/hooks/whatsapp/:integrationId` | public (signature / verify token / unguessable id) | Provider callbacks |
+| GET/POST `/conversations`, GET `/conversations/:id`, POST `/conversations/:id/messages`, POST `/conversations/:id/read` | `leads.view` | Inbox; send `text` or `templateName` + `language` + `params`; 400 `WINDOW_CLOSED` for WhatsApp free text after 24 h |
+| GET `/message-templates`, POST `/message-templates/sync` | `leads.view` / `settings.manage` | WhatsApp templates |
 | GET/POST `/api-keys`, DELETE `/api-keys/:id` | `settings.manage` | Bearer keys for the public API; key returned once |
 | GET `/public/me`, POST `/public/leads` | public, `Authorization: Bearer pmc_live_…` | Lead capture: `name, phone, email, company, city, source, message, customFields, externalId, duplicateStrategy, ownerId` → `{ id, outcome }` |
 

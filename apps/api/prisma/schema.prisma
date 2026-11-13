@@ -91,6 +91,8 @@ model Organisation {
   calls         Call[]
   dispositions  CallDisposition[]
   automations   Automation[]
+  conversations Conversation[]
+  templates     MessageTemplate[]
   subscription  Subscription?
   outboxEvents  OutboxEvent[]
   webhooks      WebhookEndpoint[]
@@ -185,6 +187,8 @@ model User {
   createdPayments    Payment[]     @relation("PaymentCreator")
   uploads            LeadAttachment[]
   calls              Call[]
+  sentMessages       Message[]      @relation("MessageSender")
+  assignedChats      Conversation[] @relation("ConversationAssignee")
 }
 
 model Membership {
@@ -408,6 +412,7 @@ model Lead {
   payments      Payment[]
   attachments  LeadAttachment[]
   calls        Call[]
+  conversations Conversation[]
 
   @@index([organisationId, archivedAt, createdAt])
   @@index([organisationId, ownerId])
@@ -492,6 +497,86 @@ model Subscription {
 
   organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
   plan         Plan         @relation(fields: [planId], references: [id])
+}
+
+enum MessageDirection {
+  IN
+  OUT
+}
+
+enum MessageStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  READ
+  FAILED
+  RECEIVED
+}
+
+/// One thread per phone number and channel (WhatsApp or SMS), linked to a lead when the number is known.
+model Conversation {
+  id             String    @id @default(cuid())
+  organisationId String
+  integrationId  String
+  channel        String
+  phone          String
+  leadId         String?
+  assigneeId     String?
+  unread         Int       @default(0)
+  lastMessageAt  DateTime  @default(now())
+  lastInboundAt  DateTime?
+  createdAt      DateTime  @default(now())
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  lead         Lead?        @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  assignee     User?        @relation("ConversationAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  messages     Message[]
+
+  @@unique([organisationId, channel, phone])
+  @@index([organisationId, lastMessageAt])
+  @@index([leadId])
+}
+
+model Message {
+  id             String           @id @default(cuid())
+  organisationId String
+  conversationId String
+  direction      MessageDirection
+  type           String           @default("text")
+  body           String
+  mediaUrl       String?
+  templateName   String?
+  status         MessageStatus    @default(QUEUED)
+  providerRef    String?
+  error          String?
+  senderId       String?
+  createdAt      DateTime         @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender       User?        @relation("MessageSender", fields: [senderId], references: [id], onDelete: SetNull)
+
+  @@index([conversationId, createdAt])
+  @@index([organisationId, providerRef])
+}
+
+/// WhatsApp templates synced from the WhatsApp Business Account. Only APPROVED ones can be sent.
+model MessageTemplate {
+  id             String   @id @default(cuid())
+  organisationId String
+  integrationId  String
+  name           String
+  language       String
+  category       String
+  status         String
+  body           String
+  variables      Int      @default(0)
+  components     Json
+  syncedAt       DateTime @default(now())
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+
+  @@unique([integrationId, name, language])
+  @@index([organisationId])
 }
 
 enum CallDirection {

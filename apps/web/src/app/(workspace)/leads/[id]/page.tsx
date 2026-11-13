@@ -1,6 +1,6 @@
 'use client';
 import {
-  Archive, ArchiveRestore, ArrowLeft, ArrowRightLeft, Banknote, CalendarCheck, CalendarPlus, Check, Download, FileText, GitMerge, Handshake, ListPlus, Mail, MessageSquareText, Paperclip, Pencil, Phone, PhoneCall, Plus, Trash2, UserRound, Sparkles, Upload, X, Zap,
+  Archive, ArchiveRestore, ArrowLeft, ArrowRightLeft, Banknote, CalendarCheck, CalendarPlus, Check, Download, FileText, GitMerge, Handshake, ListPlus, Mail, MessageCircle, MessageSquareText, Paperclip, Pencil, Phone, PhoneCall, Plus, Trash2, UserRound, Sparkles, Upload, X, Zap,
 } from 'lucide-react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
@@ -48,6 +48,9 @@ function describe(a: Activity): { icon: React.ComponentType<{ className?: string
     case 'payment_refunded': return { icon: Banknote, text: <>Refunded <strong>{money(d.amount, d.currency)}</strong></> };
     case 'payment_failed': return { icon: Banknote, text: <>Payment of <strong>{money(d.amount, d.currency)}</strong> failed</> };
     case 'payment_updated': return { icon: Banknote, text: 'Updated a payment' };
+    case 'message_sent': return { icon: MessageCircle, text: <>Sent {d.channel === 'sms' ? 'an SMS' : 'a WhatsApp message'}{d.template ? <> (template <strong>{d.template}</strong>)</> : ''}</>, body: d.body };
+    case 'message_received': return { icon: MessageCircle, text: 'Received a WhatsApp message', body: d.body };
+    case 'payment_link_created': return { icon: Banknote, text: <>Created a payment link for <strong>{money(d.amount, d.currency)}</strong></> };
     case 'call_logged': return { icon: PhoneCall, text: <>{d.direction === 'INBOUND' ? 'Inbound call' : 'Called'}{d.status === 'COMPLETED' ? d.durationSec ? ` · ${Math.floor(d.durationSec / 60)}m ${d.durationSec % 60}s` : '' : ` · ${CALL_STATUS[d.status as Call['status']] ?? d.status}`}{d.disposition ? <> · <strong>{d.disposition}</strong></> : ''}</>, body: d.notes ?? undefined };
     case 'enquiry_repeat': return { icon: Sparkles, text: 'Enquired again' };
     case 'automation_ran': return { icon: Zap, text: <>Automation <strong>{d.name}</strong> ran {d.steps} step{d.steps === 1 ? '' : 's'}</> };
@@ -204,6 +207,10 @@ export default function LeadDetailPage() {
     try { const r = await api<Payment>(`/payments/${p.id}/link`, { body: {} }); toast('Payment link created'); if (r.linkUrl) { try { await navigator.clipboard.writeText(r.linkUrl); toast('Link copied to clipboard'); } catch { /* clipboard unavailable */ } } reload(); }
     catch (e) { toast((e as Error).message, 'error'); }
   }
+  async function openChat(channel: 'whatsapp' | 'sms') {
+    try { const c = await api<{ id: string }>('/conversations', { body: { leadId: id, channel } }); router.push(`/inbox?conversation=${c.id}`); }
+    catch (e) { toast((e as Error).message, 'error'); }
+  }
   async function callViaProvider() {
     try { await api('/calls/click-to-call', { body: { leadId: id } }); toast('Calling: your phone rings first, then the lead'); setTimeout(() => calls.reload(), 3000); }
     catch (e) { toast((e as Error).message, 'error'); }
@@ -258,6 +265,8 @@ export default function LeadDetailPage() {
           <div className="flex flex-wrap items-center gap-2">
             {l.phone && connected.exotel && !l.archivedAt && <button className="btn-ghost" onClick={callViaProvider} title="Rings your phone first, then the lead; logged automatically"><PhoneCall className="h-4 w-4" />Call via Exotel</button>}
             {l.phone && <a className="btn-ghost" href={`tel:${l.phone.replace(/[^\d+]/g, '')}`} title="Opens your device's phone app and logs the call" onClick={() => { if (!l.archivedAt) { setEditCall(null); setTimeout(() => setCallOpen(true), 400); } }}><Phone className="h-4 w-4" />Call</a>}
+            {l.phone && connected.whatsapp && <button className="btn-ghost" onClick={() => openChat('whatsapp')}><MessageCircle className="h-4 w-4" />WhatsApp</button>}
+            {l.phone && connected.sms_http && <button className="btn-ghost" onClick={() => openChat('sms')}><MessageSquareText className="h-4 w-4" />SMS</button>}
             {l.email && <a className="btn-ghost" href={`mailto:${l.email}`} title="Opens your email app"><Mail className="h-4 w-4" />Email</a>}
             {canEdit && <button className="btn-ghost" onClick={() => setEditOpen(true)}><Pencil className="h-4 w-4" />Edit</button>}
             {!l.archivedAt && <button className="btn-primary" onClick={() => { setEditTask(null); setTaskOpen(true); }}><CalendarPlus className="h-4 w-4" />Follow-up</button>}
